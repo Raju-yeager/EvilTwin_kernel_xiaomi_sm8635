@@ -41,7 +41,7 @@
 ### Stack Architecture
 
 * **Wi-Fi Subsystem:** Patched `qcacld-3.0` (`qca_cld3_qca6750`) with unlocked `con_mode` hooks and direct `mac80211` translation.
-* **Root Integration:** SukiSU-Ultra / KernelSU-Next with real `KSU_VERSION` reporting.
+* **Root Integration:**KernelSU-Next with real `KSU_VERSION` reporting.
 * **Hiding Engine:** SUSFS v2.3.0 covering `sus_su`, mount points, open-redirect, and cmdline spoofing.
 * **Telephony & IMS:** `DEBUG_INFO_BTF` remains enabled; full VoLTE, VoNR, and Netd functionality maintained without regressions.
 
