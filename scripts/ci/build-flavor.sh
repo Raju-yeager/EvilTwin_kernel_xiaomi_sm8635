@@ -19,7 +19,7 @@ if [[ -f "$ROOT/scripts/ci/pins.env" ]]; then
 fi
 
 KSUN_REPO="${KSUN_REPO:-https://github.com/KernelSU-Next/KernelSU-Next}"
-KSUN_TAG="${KSUN_TAG:-v3.4.2}"
+KSUN_TAG="${KSUN_TAG:-v3.3.0}"
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
 SUSFS_PIN="${SUSFS_PIN:-4fc9c1898ea66f51847cdbc0d1473ea4ef525a70}"
 
