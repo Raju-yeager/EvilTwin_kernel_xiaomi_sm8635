@@ -39,7 +39,7 @@ ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
 ZIP_VERSION="${ZIP_VERSION:-v1.0}"
 
 log() {
-  printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +\%H:\%M:\%S)" "$*"
+  printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
 }
 
 log "flavor=$FLAVOR  clang:$(clang --version | head -1)"
@@ -131,6 +131,10 @@ if [[ -d "$QCACLD_DIR" ]]; then
   log "Building Patched Wi-Fi Module (qca_cld3_qca6750.ko)"
   ln -sfn ../qca-wifi-host-cmn "$QCACLD_DIR/cmn"
 
+  # Remove legacy pkt_capture and disable raw frame drop in qca6750 defconfig
+  sed -i '/CONFIG_WLAN_FEATURE_PKT_CAPTURE/d' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
+  sed -i 's/CONFIG_DP_RX_DROP_RAW_FRM=y/CONFIG_DP_RX_DROP_RAW_FRM=n/g' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
+
   make -j"$JOBS" -C "$ROOT" O="$OUT" \
     M="$QCACLD_DIR" \
     CC="ccache clang" \
@@ -149,7 +153,7 @@ if [[ -d "$QCACLD_DIR" ]]; then
     DEVNAME=qca6750 \
     MODNAME=qca_cld3_qca6750 \
     CONFIG_QCA_CLD_WLAN=m \
-    WLAN_CFG_OVERRIDE="CONFIG_QCA_CLD_WLAN=m CONFIG_DP_RX_DROP_RAW_FRM=n CONFIG_WLAN_FEATURE_PKT_CAPTURE=y CONFIG_FEATURE_MONITOR_MODE_SUPPORT=y CONFIG_WIFI_MONITOR_SUPPORT=y" \
+    WLAN_CFG_OVERRIDE="CONFIG_QCA_CLD_WLAN=m CONFIG_DP_RX_DROP_RAW_FRM=n CONFIG_FEATURE_MONITOR_MODE_SUPPORT=y CONFIG_WIFI_MONITOR_SUPPORT=y" \
     KBUILD_MODPOST_WARN=1 \
     KCFLAGS="-Wno-error" \
     modules 2>&1 | tee "$OUT/wlan_build.log"
@@ -174,5 +178,24 @@ if [ -f "$home/qca_cld3_qca6750.ko" ]; then
   mkdir -p /data/adb/eviltwin /data/adb/post-fs-data.d
   cp -f "$home/qca_cld3_qca6750.ko" /data/adb/eviltwin/qca_cld3_qca6750.ko
   chmod 0644 /data/adb/eviltwin/qca_cld3_qca6750.ko
-  cat > /data/adb/post-fs-data.d/eviltwin_wifi.sh << '
-  
+  cat > /data/adb/post-fs-data.d/eviltwin_wifi.sh << 'BOOTEOF'
+#!/system/bin/sh
+MOD="/data/adb/eviltwin/qca_cld3_qca6750.ko"
+for TARGET in /vendor_dlkm/lib/modules/qca_cld3_qca6750.ko /vendor/lib/modules/qca_cld3_qca6750.ko /system/vendor/lib/modules/qca_cld3_qca6750.ko; do
+  if [ -f "$TARGET" ] && [ -f "$MOD" ]; then
+    mount -o bind "$MOD" "$TARGET"
+  fi
+done
+BOOTEOF
+  chmod 0755 /data/adb/post-fs-data.d/eviltwin_wifi.sh
+fi
+EOF
+  fi
+
+  STAMP="$(date -u +%Y%m%d)"
+  SHA="$(git rev-parse --short=7 HEAD 2>/dev/null || echo local)"
+  ZIP_NAME="${ZIP_PREFIX}-${FLAVOR}-${ZIP_VERSION}-${STAMP}-${SHA}.zip"
+  (cd "$STAGE" && zip -r9q "$DIST/$ZIP_NAME" .)
+  rm -rf "$STAGE"
+  log "Packaged unified flashable zip: $DIST/$ZIP_NAME"
+fi
