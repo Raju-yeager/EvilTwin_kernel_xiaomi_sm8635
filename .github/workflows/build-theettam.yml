@@ -70,4 +70,73 @@ jobs:
           echo "${NEUTRON_SHA256}  neutron-clang-${NEUTRON_BUILD}.tar.zst" | sha256sum -c
           tar -I zstd -xf "neutron-clang-${NEUTRON_BUILD}.tar.zst" && rm -f "neutron-clang-${NEUTRON_BUILD}.tar.zst"
           curl -fsSLo antman "https://raw.githubusercontent.com/Neutron-Toolchains/antman/${ANTMAN_COMMIT}/antman"
-          echo
+          echo "${ANTMAN_SHA256}  antman" | sha256sum -c
+          chmod +x antman
+          for i in 1 2 3 4; do
+            ./antman --patch=glibc && break
+            [ "$i" = 4 ] && { echo "::error::antman --patch=glibc failed 4 times"; exit 1; }
+            echo "antman attempt $i failed; retrying in $((i*20))s"; sleep $((i*20))
+          done
+          ./bin/clang --version | head -1
+
+      - name: Build EvilTwin Kernel & Patched Wi-Fi Module (ksun-susfs)
+        env:
+          ZIP_PREFIX: ${{ env.ZIP_PREFIX }}
+          ZIP_VERSION: ${{ env.EVILTWIN_VERSION }}
+          KMI_STRICT: "0"
+          ALLOW_DIRTY: "1"
+          SKIP_ZIP: "0"
+        run: |
+          set -euo pipefail
+          export CLANG_DIR="$HOME/clang"
+          chmod +x scripts/ci/build-flavor.sh
+          scripts/ci/build-flavor.sh ksun-susfs
+
+      - name: Upload EvilTwin Kernel & Patched Wi-Fi Module
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: EvilTwin-ksun-susfs-bundle
+          path: |
+            dist/*.zip
+            dist/qca_cld3_qca6750.ko
+          if-no-files-found: error
+
+      - name: Upload Build Logs & Symvers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: EvilTwin-build-debug
+          path: |
+            dist/Image-*
+            dist/Module.symvers-*
+            dist/config-*
+            out/build.log
+            out/wlan_build.log
+            out/kmi-diff.txt
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    if: success() && github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: EvilTwin-ksun-susfs-bundle
+          path: release_files
+          merge-multiple: true
+      - run: ls -lh release_files/
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: eviltwin-${{ env.EVILTWIN_VERSION }}-${{ github.run_number }}
+          prerelease: true
+          make_latest: true
+          name: EvilTwin ${{ env.EVILTWIN_VERSION }} (Build #${{ github.run_number }})
+          body: |
+            **EvilTwin Kernel (${{ env.EVILTWIN_VERSION }}) — KernelSU-Next + SuSFS + Monitor TX Injection**
+            * **Device:** POCO F6 / Redmi Turbo 3 (`peridot` · SM8635)
+            * **Kernel Branch:** `${{ github.ref_name }}` @ `${{ github.sha }}`
+            * **Toolchain:** Neutron Clang ${{ env.NEUTRON_BUILD }}
+          files: |
+            release_files/*.zip
+            release_files/*.ko
