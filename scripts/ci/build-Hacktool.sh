@@ -76,6 +76,21 @@ log "Fetching clean gki_defconfig from Vibranium repo..."
 curl -fsSL "https://raw.githubusercontent.com/khargosxh18/android_kernel_xiaomi_sm8635/HEAD/arch/arm64/configs/gki_defconfig" \
   -o "$ROOT/arch/arm64/configs/gki_defconfig"
 
+# 2c. Deduplicate any double EXPORT_SYMBOL*(sysctl_sched_*) left in kernel/sched/fair.c by BORE patch
+log "Deduplicating EXPORT_SYMBOL in kernel/sched/fair.c..."
+python3 -c '
+p = "kernel/sched/fair.c"
+s = open(p).read().splitlines(True)
+seen, out = set(), []
+for line in s:
+    if "EXPORT_SYMBOL" in line and "sysctl_sched_" in line:
+        if line.strip() in seen:
+            continue
+        seen.add(line.strip())
+    out.append(line)
+open(p, "w").writelines(out)
+'
+
 log "Applying gki_defconfig"
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
