@@ -10,6 +10,14 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# Load pinned versions for KernelSU-Next and SuSFS
+if [[ -f "$ROOT/scripts/ci/pins.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/ci/pins.env"
+  set +a
+fi
+
 CLANG_DIR="${CLANG_DIR:?CLANG_DIR must point to Neutron Clang root}"
 export PATH="$CLANG_DIR/bin:$PATH"
 export ARCH=arm64
@@ -31,9 +39,11 @@ log() {
 
 log "flavor=$FLAVOR  clang:$(clang --version | head -1)"
 
+# Run KernelSU-Next + SuSFS integration if not already integrated
 if [[ ! -d "$ROOT/KernelSU-Next" ]]; then
-  echo "::error::KernelSU-Next/ directory missing at repo root"
-  exit 1
+  log "Integrating KernelSU-Next (${KSUN_TAG:-v3.3.0}) + SuSFS (${SUSFS_EXPECT_VERSION:-v2.3.0})..."
+  chmod +x "$ROOT/scripts/susfs/integrate.sh"
+  "$ROOT/scripts/susfs/integrate.sh"
 fi
 
 rm -rf "$OUT"
@@ -89,7 +99,7 @@ cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
 cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
 
-# If modules_src was checked out by CI, compile qca_cld3_qca6750.ko now
+# Compile patched qca_cld3_qca6750.ko from modules_src
 WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
 QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
 if [[ -d "$QCACLD_DIR" ]]; then
