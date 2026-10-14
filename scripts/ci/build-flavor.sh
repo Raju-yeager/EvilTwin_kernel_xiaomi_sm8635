@@ -19,7 +19,7 @@ if [[ -f "$ROOT/scripts/ci/pins.env" ]]; then
 fi
 
 KSUN_REPO="${KSUN_REPO:-https://github.com/KernelSU-Next/KernelSU-Next}"
-KSUN_TAG="${KSUN_TAG:-v3.3.0}"
+KSUN_TAG="${KSUN_TAG:-v3.4.2}"
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
 SUSFS_PIN="${SUSFS_PIN:-4fc9c1898ea66f51847cdbc0d1473ea4ef525a70}"
 
@@ -68,18 +68,13 @@ if [[ ! -d "$KSUN_DIR" ]]; then
   "$ROOT/scripts/susfs/integrate.sh" "$KSUN_DIR" "$S4K_DIR" "$ROOT"
 fi
 
-# 3. Allow vendor & custom Wi-Fi modules to load even if symbol CRCs shift
-if [[ -f "$ROOT/kernel/module/version.c" ]]; then
-  sed -i '/bad_version:/,/return 0;/s/return 0;/return 1;/' "$ROOT/kernel/module/version.c"
-fi
-
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
 
 log "Applying gki_defconfig"
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-log "Configuring EvilTwin (KernelSU-Next + SuSFS + Module Loading)"
+log "Configuring EvilTwin (KernelSU-Next + SuSFS — KMI Preserved)"
 ./scripts/config --file "$OUT/.config" \
   --set-str LOCALVERSION "-EvilTwin-KSUN-SuSFS" \
   -d LOCALVERSION_AUTO \
@@ -100,12 +95,7 @@ log "Configuring EvilTwin (KernelSU-Next + SuSFS + Module Loading)"
   -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
   -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
   -e KSU_SUSFS_OPEN_REDIRECT \
-  -d KSU_SUSFS_SUS_SU \
-  -e CFG80211 \
-  -e MAC80211 \
-  -e RFKILL \
-  -d MODULE_SIG_FORCE \
-  -d MODULE_SIG_PROTECT
+  -d KSU_SUSFS_SUS_SU
 
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
@@ -124,14 +114,13 @@ cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
 cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
 
-# 4. Compile patched qca_cld3_qca6750.ko from modules_src
+# 3. Compile patched qca_cld3_qca6750.ko from modules_src
 WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
 QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
 if [[ -d "$QCACLD_DIR" ]]; then
   log "Building Patched Wi-Fi Module (qca_cld3_qca6750.ko)"
   ln -sfn ../qca-wifi-host-cmn "$QCACLD_DIR/cmn"
 
-  # Remove legacy pkt_capture and disable raw frame drop in qca6750 defconfig
   sed -i '/CONFIG_WLAN_FEATURE_PKT_CAPTURE/d' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
   sed -i 's/CONFIG_DP_RX_DROP_RAW_FRM=y/CONFIG_DP_RX_DROP_RAW_FRM=n/g' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
 
@@ -159,37 +148,16 @@ if [[ -d "$QCACLD_DIR" ]]; then
     modules 2>&1 | tee "$OUT/wlan_build.log"
 
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
-  cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750.ko"
 fi
 
-# 5. Package Unified AnyKernel3 Zip (Kernel Image + Auto-Mounted Wi-Fi Module)
+# 4. Package Unified AnyKernel3 Zip ONLY (no loose .ko in dist/)
 if [[ "${SKIP_ZIP:-0}" != "1" && -d "$ROOT/anykernel" ]]; then
   STAGE="$(mktemp -d)"
   cp -r "$ROOT/anykernel/." "$STAGE/"
   cp -f "$IMG" "$STAGE/Image"
 
-  if [[ -f "$DIST/qca_cld3_qca6750.ko" ]]; then
-    cp -f "$DIST/qca_cld3_qca6750.ko" "$STAGE/qca_cld3_qca6750.ko"
-    cat >> "$STAGE/anykernel.sh" << 'EOF'
-
-# Install EvilTwin patched Wi-Fi module automatically via KernelSU boot hook
-if [ -f "$home/qca_cld3_qca6750.ko" ]; then
-  ui_print "- Installing EvilTwin Patched Wi-Fi Module (Monitor + Injection)..."
-  mkdir -p /data/adb/eviltwin /data/adb/post-fs-data.d
-  cp -f "$home/qca_cld3_qca6750.ko" /data/adb/eviltwin/qca_cld3_qca6750.ko
-  chmod 0644 /data/adb/eviltwin/qca_cld3_qca6750.ko
-  cat > /data/adb/post-fs-data.d/eviltwin_wifi.sh << 'BOOTEOF'
-#!/system/bin/sh
-MOD="/data/adb/eviltwin/qca_cld3_qca6750.ko"
-for TARGET in /vendor_dlkm/lib/modules/qca_cld3_qca6750.ko /vendor/lib/modules/qca_cld3_qca6750.ko /system/vendor/lib/modules/qca_cld3_qca6750.ko; do
-  if [ -f "$TARGET" ] && [ -f "$MOD" ]; then
-    mount -o bind "$MOD" "$TARGET"
-  fi
-done
-BOOTEOF
-  chmod 0755 /data/adb/post-fs-data.d/eviltwin_wifi.sh
-fi
-EOF
+  if [[ -f "$QCACLD_DIR/qca_cld3_qca6750.ko" ]]; then
+    cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$STAGE/qca_cld3_qca6750.ko"
   fi
 
   STAMP="$(date -u +%Y%m%d)"
