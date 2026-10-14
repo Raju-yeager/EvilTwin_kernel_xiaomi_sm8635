@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
                   chmod +x scripts/ci/build-Hacktool.sh
-        scripts/ci/build-Hacktool.sh ksun-susfs
+                  scripts/ci/build-Hacktool.sh ksun-susfs
 
 
       - name: Upload EvilTwin Flashable Kernel ZIP
