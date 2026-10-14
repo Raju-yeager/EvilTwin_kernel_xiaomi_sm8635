@@ -10,13 +10,18 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-# Load pinned versions for KernelSU-Next and SuSFS
+# 1. Load pinned versions for KernelSU-Next and SuSFS
 if [[ -f "$ROOT/scripts/ci/pins.env" ]]; then
   set -a
   # shellcheck disable=SC1091
   source "$ROOT/scripts/ci/pins.env"
   set +a
 fi
+
+KSUN_REPO="${KSUN_REPO:-https://github.com/KernelSU-Next/KernelSU-Next}"
+KSUN_TAG="${KSUN_TAG:-v3.3.0}"
+SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
+SUSFS_PIN="${SUSFS_PIN:-4fc9c1898ea66f51847cdbc0d1473ea4ef525a70}"
 
 CLANG_DIR="${CLANG_DIR:?CLANG_DIR must point to Neutron Clang root}"
 export PATH="$CLANG_DIR/bin:$PATH"
@@ -34,16 +39,38 @@ ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
 ZIP_VERSION="${ZIP_VERSION:-v1.0}"
 
 log() {
-  printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
+  printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +\%H:\%M:\%S)" "$*"
 }
 
 log "flavor=$FLAVOR  clang:$(clang --version | head -1)"
 
-# Run KernelSU-Next + SuSFS integration if not already integrated
-if [[ ! -d "$ROOT/KernelSU-Next" ]]; then
-  log "Integrating KernelSU-Next (${KSUN_TAG:-v3.3.0}) + SuSFS (${SUSFS_EXPECT_VERSION:-v2.3.0})..."
+# 2. Clone KernelSU-Next & susfs4ksu and run scripts/susfs/integrate.sh
+KSUN_DIR="$ROOT/KernelSU-Next"
+S4K_DIR="$ROOT/susfs4ksu"
+
+if [[ ! -d "$KSUN_DIR" ]]; then
+  log "Cloning KernelSU-Next ($KSUN_TAG)..."
+  git clone --branch "$KSUN_TAG" "$KSUN_REPO" "$KSUN_DIR"
+  ln -sfn "$KSUN_DIR/kernel" "$ROOT/drivers/kernelsu"
+  grep -q "kernelsu" "$ROOT/drivers/Makefile" || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$ROOT/drivers/Makefile"
+  grep -q "drivers/kernelsu/Kconfig" "$ROOT/drivers/Kconfig" || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "$ROOT/drivers/Kconfig"
+
+  log "Fetching susfs4ksu ($SUSFS_PIN)..."
+  rm -rf "$S4K_DIR"
+  mkdir -p "$S4K_DIR"
+  git -C "$S4K_DIR" init -q
+  git -C "$S4K_DIR" remote add origin "$SUSFS_REPO"
+  git -C "$S4K_DIR" fetch --depth=1 origin "$SUSFS_PIN"
+  git -C "$S4K_DIR" checkout -q FETCH_HEAD
+
+  log "Running scripts/susfs/integrate.sh..."
   chmod +x "$ROOT/scripts/susfs/integrate.sh"
-  "$ROOT/scripts/susfs/integrate.sh"
+  "$ROOT/scripts/susfs/integrate.sh" "$KSUN_DIR" "$S4K_DIR" "$ROOT"
+fi
+
+# 3. Allow vendor & custom Wi-Fi modules to load even if symbol CRCs shift
+if [[ -f "$ROOT/kernel/module/version.c" ]]; then
+  sed -i '/bad_version:/,/return 0;/s/return 0;/return 1;/' "$ROOT/kernel/module/version.c"
 fi
 
 rm -rf "$OUT"
@@ -52,7 +79,7 @@ mkdir -p "$OUT" "$DIST"
 log "Applying gki_defconfig"
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-log "Configuring EvilTwin (KernelSU-Next + SuSFS + Unsigned Module Loading)"
+log "Configuring EvilTwin (KernelSU-Next + SuSFS + Module Loading)"
 ./scripts/config --file "$OUT/.config" \
   --set-str LOCALVERSION "-EvilTwin-KSUN-SuSFS" \
   -d LOCALVERSION_AUTO \
@@ -77,10 +104,8 @@ log "Configuring EvilTwin (KernelSU-Next + SuSFS + Unsigned Module Loading)"
   -e CFG80211 \
   -e MAC80211 \
   -e RFKILL \
-  -d MODULE_SIG \
   -d MODULE_SIG_FORCE \
-  -d MODULE_SIG_ALL \
-  -d MODVERSIONS
+  -d MODULE_SIG_PROTECT
 
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
@@ -99,7 +124,7 @@ cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
 cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
 
-# Compile patched qca_cld3_qca6750.ko from modules_src
+# 4. Compile patched qca_cld3_qca6750.ko from modules_src
 WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
 QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
 if [[ -d "$QCACLD_DIR" ]]; then
@@ -133,12 +158,12 @@ if [[ -d "$QCACLD_DIR" ]]; then
   cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750.ko"
 fi
 
+# 5. Package Unified AnyKernel3 Zip (Kernel Image + Auto-Mounted Wi-Fi Module)
 if [[ "${SKIP_ZIP:-0}" != "1" && -d "$ROOT/anykernel" ]]; then
   STAGE="$(mktemp -d)"
   cp -r "$ROOT/anykernel/." "$STAGE/"
   cp -f "$IMG" "$STAGE/Image"
 
-  # Embed patched Wi-Fi module inside AnyKernel3 zip so a single flash installs both
   if [[ -f "$DIST/qca_cld3_qca6750.ko" ]]; then
     cp -f "$DIST/qca_cld3_qca6750.ko" "$STAGE/qca_cld3_qca6750.ko"
     cat >> "$STAGE/anykernel.sh" << 'EOF'
@@ -149,24 +174,5 @@ if [ -f "$home/qca_cld3_qca6750.ko" ]; then
   mkdir -p /data/adb/eviltwin /data/adb/post-fs-data.d
   cp -f "$home/qca_cld3_qca6750.ko" /data/adb/eviltwin/qca_cld3_qca6750.ko
   chmod 0644 /data/adb/eviltwin/qca_cld3_qca6750.ko
-  cat > /data/adb/post-fs-data.d/eviltwin_wifi.sh << 'BOOTEOF'
-#!/system/bin/sh
-MOD="/data/adb/eviltwin/qca_cld3_qca6750.ko"
-for TARGET in /vendor_dlkm/lib/modules/qca_cld3_qca6750.ko /vendor/lib/modules/qca_cld3_qca6750.ko /system/vendor/lib/modules/qca_cld3_qca6750.ko; do
-  if [ -f "$TARGET" ] && [ -f "$MOD" ]; then
-    mount -o bind "$MOD" "$TARGET"
-  fi
-done
-BOOTEOF
-  chmod 0755 /data/adb/post-fs-data.d/eviltwin_wifi.sh
-fi
-EOF
-  fi
-
-  STAMP="$(date -u +%Y%m%d)"
-  SHA="$(git rev-parse --short=7 HEAD 2>/dev/null || echo local)"
-  ZIP_NAME="${ZIP_PREFIX}-${FLAVOR}-${ZIP_VERSION}-${STAMP}-${SHA}.zip"
-  (cd "$STAGE" && zip -r9q "$DIST/$ZIP_NAME" .)
-  rm -rf "$STAGE"
-  log "Packaged unified flashable zip: $DIST/$ZIP_NAME"
-fi
+  cat > /data/adb/post-fs-data.d/eviltwin_wifi.sh << '
+  
