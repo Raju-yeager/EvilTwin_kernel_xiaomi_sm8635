@@ -71,10 +71,15 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
 
+# 2b. Pull clean GKI defconfig from Vibranium (khargosxh18/android_kernel_xiaomi_sm8635)
+log "Fetching clean gki_defconfig from Vibranium repo..."
+curl -fsSL "https://raw.githubusercontent.com/khargosxh18/android_kernel_xiaomi_sm8635/HEAD/arch/arm64/configs/gki_defconfig" \
+  -o "$ROOT/arch/arm64/configs/gki_defconfig"
+
 log "Applying gki_defconfig"
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-log "Configuring EvilTwin (KernelSU-Next + SuSFS — KMI Preserved)"
+log "Configuring EvilTwin (KernelSU-Next + SuSFS + Strict GKI KABI Lock)"
 ./scripts/config --file "$OUT/.config" \
   --set-str LOCALVERSION "-EvilTwin-KSUN-SuSFS" \
   -d LOCALVERSION_AUTO \
@@ -95,9 +100,49 @@ log "Configuring EvilTwin (KernelSU-Next + SuSFS — KMI Preserved)"
   -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
   -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
   -e KSU_SUSFS_OPEN_REDIRECT \
-  -d KSU_SUSFS_SUS_SU
+  -d KSU_SUSFS_SUS_SU \
+  -d UNWIND_PATCH_PAC_INTO_SCS \
+  -d DYNAMIC_SCS \
+  -d UNWIND_TABLES \
+  -d SCHED_BORE \
+  -d RT_SOFTIRQ_AWARE_SCHED \
+  -d RCU_BOOST \
+  -d RCU_LAZY \
+  -d BOEFFLA_WL_BLOCKER \
+  -d KPROFILES \
+  -d MQ_IOSCHED_ADIOS \
+  -d ADIOS_IOSCHED \
+  -d HZ_100 \
+  -e HZ_250 \
+  -d HZ_300 \
+  -d HZ_1000 \
+  --set-val HZ 250 \
+  --set-val UCLAMP_BUCKETS_COUNT 5 \
+  -e CFS_BANDWIDTH \
+  -e RT_GROUP_SCHED \
+  -e TASK_DELAY_ACCT \
+  -e RSEQ \
+  -e SCHED_CLUSTER \
+  -e PID_NS \
+  -e USER_NS \
+  -e CGROUP_PIDS \
+  -e CGROUP_DEVICE \
+  -e CGROUP_PERF \
+  -e CGROUP_MISC
 
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+# Force-disable UNWIND_TABLES if any Kconfig 'select' re-enabled it during olddefconfig
+if grep -q "^CONFIG_UNWIND_TABLES=y" "$OUT/.config" || grep -q "^CONFIG_SCHED_BORE=y" "$OUT/.config"; then
+  log "WARNING: Kconfig re-enabled ABI-breaking symbols; forcing off..."
+  sed -i 's/^CONFIG_UNWIND_PATCH_PAC_INTO_SCS=y/# CONFIG_UNWIND_PATCH_PAC_INTO_SCS is not set/' "$OUT/.config"
+  sed -i 's/^CONFIG_DYNAMIC_SCS=y/# CONFIG_DYNAMIC_SCS is not set/' "$OUT/.config"
+  sed -i 's/^CONFIG_UNWIND_TABLES=y/# CONFIG_UNWIND_TABLES is not set/' "$OUT/.config"
+  sed -i 's/^CONFIG_SCHED_BORE=y/# CONFIG_SCHED_BORE is not set/' "$OUT/.config"
+fi
+
+log "Verifying KABI-critical config state:"
+grep -E "CONFIG_(UNWIND_TABLES|SCHED_BORE|HZ=|UCLAMP_BUCKETS_COUNT|CFS_BANDWIDTH|TASK_DELAY_ACCT|RSEQ)" "$OUT/.config" || true
 
 log "Building Kernel Image & Modules (jobs=$JOBS)"
 make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -109,6 +154,9 @@ if [[ ! -f "$IMG" ]]; then
   echo "::error::Kernel Image was not produced at $IMG"
   exit 1
 fi
+
+log "Checking exported KABI CRCs for module_layout and runqueues:"
+grep -E "\b(module_layout|runqueues)\b" "$OUT/Module.symvers" || true
 
 cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
