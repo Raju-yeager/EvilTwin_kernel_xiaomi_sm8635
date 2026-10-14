@@ -55,4 +55,44 @@
 ### Prerequisites
 * Unlocked Bootloader on POCO F6 / Redmi Turbo 3 (`peridot`).
 * **KernelSU-Next Manager** installed.
-* Backup of your stock `boot.img
+* Backup of your stock `boot.img` before flashing.
+
+### Method 1: Kernel Flasher / Custom Recovery (Recommended)
+> **Why use the ZIP?** The unified AnyKernel3 `.zip` flashes both the kernel `Image` AND installs the patched `qca_cld3_qca6750.ko` Wi-Fi module + boot bind-mount script automatically.
+
+1. Download `EvilTwin-ksun-susfs-v1.0-*.zip` from [Releases](https://github.com/Raju-yeager/EvilTwin_kernel_xiaomi_sm8635/releases) or GitHub Actions artifacts.
+2. Flash the ZIP using **Horizon Kernel Flasher**, **Franco Kernel Manager**, or **Custom Recovery** (OrangeFox / TWRP / AERA).
+3. Reboot System.
+
+### Method 2: Fastboot (Kernel Image Only)
+If flashing a raw `boot.img` via Fastboot, you must manually place `qca_cld3_qca6750.ko` in `/data/adb/eviltwin/` for the patched Wi-Fi driver to take effect:
+```bash
+fastboot flash boot boot.img
+fastboot reboot
+
+🔧 Usage & Monitor Mode Commands
+1. Toggle Monitor Mode (wlan0)
+Run the following in Termux or ADB root shell (su):
+# Enable Monitor Mode (con_mode = 4)
+su -c "ip link set wlan0 down && echo 4 > /sys/module/qca_cld3_qca6750/parameters/con_mode && ip link set wlan0 up"
+
+# Return to Normal Managed / Station Mode (con_mode = 0)
+su -c "ip link set wlan0 down && echo 0 > /sys/module/qca_cld3_qca6750/parameters/con_mode && ip link set wlan0 up"
+
+2. Verify Installation & Driver Load State
+# Check EvilTwin kernel version
+uname -r
+
+# Verify patched Wi-Fi module is bind-mounted and loaded
+lsmod | grep qca_cld3_qca6750
+mount | grep qca_cld3_qca6750
+
+# Check SuSFS initialization in kernel ring buffer
+su -c "dmesg | grep -i susfs"
+
+<div align="center">
+<b>Built for the Offensive Security & Hardware Research Community.</b>
+
+<i>Contributions, bug reports, and pull requests are welcome.</i>
+</div>
+
