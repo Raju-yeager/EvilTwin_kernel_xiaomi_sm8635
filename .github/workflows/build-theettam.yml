@@ -1,10 +1,10 @@
-name: EvilTwin — Build KernelSU-Next + SuSFS
+name: EvilTwin — Build Kernel + Patched Wi-Fi Driver
 
 on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish a GitHub Release with the flashable zip"
+        description: "Publish a GitHub Release with the flashable zip & Wi-Fi module"
         type: boolean
         default: false
   push:
@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    name: EvilTwin (ksun-susfs)
+    name: EvilTwin (ksun-susfs + qca6750)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -39,12 +39,20 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Checkout EvilTwin Patched Wi-Fi Modules
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules
+          ref: lineage-23.2
+          path: modules_src
+          fetch-depth: 1
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bc bison flex build-essential \
             libssl-dev libncurses-dev libelf-dev zlib1g-dev pkg-config git curl zip cpio \
-            kmod python3 ccache lld llvm dwarves zstd
+            kmod python3 python-is-python3 ccache lld llvm dwarves zstd
 
       - name: Restore ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -56,4 +64,119 @@ jobs:
 
       - name: Setup Neutron Clang ${{ env.NEUTRON_BUILD }}
         run: |
-          set
+          set -euo pipefail
+          rm -rf "$HOME/clang"; mkdir -p "$HOME/clang"; cd "$HOME/clang"
+          curl -fsSLO "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${NEUTRON_BUILD}/neutron-clang-${NEUTRON_BUILD}.tar.zst"
+          echo "${NEUTRON_SHA256}  neutron-clang-${NEUTRON_BUILD}.tar.zst" | sha256sum -c
+          tar -I zstd -xf "neutron-clang-${NEUTRON_BUILD}.tar.zst" && rm -f "neutron-clang-${NEUTRON_BUILD}.tar.zst"
+          curl -fsSLo antman "https://raw.githubusercontent.com/Neutron-Toolchains/antman/${ANTMAN_COMMIT}/antman"
+          echo "${ANTMAN_SHA256}  antman" | sha256sum -c
+          chmod +x antman
+          for i in 1 2 3 4; do
+            ./antman --patch=glibc && break
+            [ "$i" = 4 ] && { echo "::error::antman --patch=glibc failed 4 times"; exit 1; }
+            echo "antman attempt $i failed; retrying in $((i*20))s"; sleep $((i*20))
+          done
+          ./bin/clang --version | head -1
+
+      - name: Build EvilTwin Kernel (ksun-susfs)
+        env:
+          ZIP_PREFIX: ${{ env.ZIP_PREFIX }}
+          ZIP_VERSION: ${{ env.EVILTWIN_VERSION }}
+          KMI_STRICT: "0"
+          ALLOW_DIRTY: "1"
+          SKIP_ZIP: "0"
+        run: |
+          set -euo pipefail
+          export CLANG_DIR="$HOME/clang"
+          chmod +x scripts/ci/build-flavor.sh
+          scripts/ci/build-flavor.sh ksun-susfs
+
+      - name: Build Patched Wi-Fi Module (qca_cld3_qca6750.ko)
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/clang/bin:$PATH"
+          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
+
+          KERNEL_DIR="$GITHUB_WORKSPACE"
+          WLAN_DIR="$GITHUB_WORKSPACE/modules_src/qcom/opensource/wlan"
+          QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
+
+          # Create cmn symlink expected by qcacld-3.0/Kbuild
+          ln -sfn ../qca-wifi-host-cmn "$QCACLD_DIR/cmn"
+
+          make -j"$(nproc --all)" -C "$KERNEL_DIR" O="$KERNEL_DIR/out" \
+            M="$QCACLD_DIR" \
+            CC="ccache clang" \
+            WLAN_ROOT="$QCACLD_DIR" \
+            WLAN_COMMON_ROOT=cmn \
+            WLAN_COMMON_INC="$QCACLD_DIR/cmn" \
+            WLAN_FW_API="$WLAN_DIR/fw-api/" \
+            CONFIG_ARCH_PINEAPPLE=y \
+            CONFIG_ARCH_QCOM=y \
+            CONFIG_CNSS_OUT_OF_TREE=y \
+            CONFIG_IPA_OUT_OF_TREE=y \
+            CONFIG_QCA_WIFI_ISOC=0 \
+            CONFIG_QCA_WIFI_2_0=1 \
+            WLAN_PROFILE=qca6750 \
+            DYNAMIC_SINGLE_CHIP=qca6750 \
+            DEVNAME=qca6750 \
+            MODNAME=qca_cld3_qca6750 \
+            CONFIG_QCA_CLD_WLAN=m \
+            WLAN_CFG_OVERRIDE="CONFIG_QCA_CLD_WLAN=m CONFIG_DP_RX_DROP_RAW_FRM=n CONFIG_WLAN_FEATURE_PKT_CAPTURE=y CONFIG_FEATURE_MONITOR_MODE_SUPPORT=y CONFIG_WIFI_MONITOR_SUPPORT=y" \
+            KBUILD_MODPOST_WARN=1 \
+            KCFLAGS="-Wno-error" \
+            modules 2>&1 | tee "$KERNEL_DIR/out/wlan_build.log"
+
+          cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$KERNEL_DIR/dist/qca_cld3_qca6750.ko"
+          llvm-strip --strip-debug "$KERNEL_DIR/dist/qca_cld3_qca6750.ko"
+          ls -lh "$KERNEL_DIR/dist/qca_cld3_qca6750.ko"
+
+      - name: Upload EvilTwin Kernel & Patched Wi-Fi Module
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: EvilTwin-ksun-susfs-bundle
+          path: |
+            dist/*.zip
+            dist/qca_cld3_qca6750.ko
+          if-no-files-found: error
+
+      - name: Upload Build Logs & Symvers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: EvilTwin-build-debug
+          path: |
+            dist/Image-*
+            dist/Module.symvers-*
+            dist/config-*
+            out/build.log
+            out/wlan_build.log
+            out/kmi-diff.txt
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    if: success() && github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: EvilTwin-ksun-susfs-bundle
+          path: release_files
+          merge-multiple: true
+      - run: ls -lh release_files/
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: eviltwin-${{ env.EVILTWIN_VERSION }}-${{ github.run_number }}
+          prerelease: true
+          make_latest: true
+          name: EvilTwin ${{ env.EVILTWIN_VERSION }} (Build #${{ github.run_number }})
+          body: |
+            **EvilTwin Kernel (${{ env.EVILTWIN_VERSION }}) — KernelSU-Next + SuSFS + Monitor TX Injection**
+            * **Device:** POCO F6 / Redmi Turbo 3 (`peridot` · SM8635)
+            * **Kernel Branch:** `${{ github.ref_name }}` @ `${{ github.sha }}`
+            * **Toolchain:** Neutron Clang ${{ env.NEUTRON_BUILD }}
+          files: |
+            release_files/*.zip
+            release_files/*.ko
