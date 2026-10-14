@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish a GitHub Release with the flashable zip & Wi-Fi module"
+        description: "Publish a GitHub Release with the unified flashable zip"
         type: boolean
         default: false
   push:
@@ -79,7 +79,7 @@ jobs:
           done
           ./bin/clang --version | head -1
 
-      - name: Build EvilTwin Kernel & Patched Wi-Fi Module (ksun-susfs)
+      - name: Build EvilTwin Unified Kernel ZIP (ksun-susfs)
         env:
           ZIP_PREFIX: ${{ env.ZIP_PREFIX }}
           ZIP_VERSION: ${{ env.EVILTWIN_VERSION }}
@@ -92,13 +92,11 @@ jobs:
           chmod +x scripts/ci/build-flavor.sh
           scripts/ci/build-flavor.sh ksun-susfs
 
-      - name: Upload EvilTwin Kernel & Patched Wi-Fi Module
+      - name: Upload EvilTwin Flashable Kernel ZIP
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: EvilTwin-ksun-susfs-bundle
-          path: |
-            dist/*.zip
-            dist/qca_cld3_qca6750.ko
+          name: EvilTwin-ksun-susfs-zip
+          path: dist/*.zip
           if-no-files-found: error
 
       - name: Upload Build Logs & Symvers
@@ -122,7 +120,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: EvilTwin-ksun-susfs-bundle
+          pattern: EvilTwin-ksun-susfs-zip
           path: release_files
           merge-multiple: true
       - run: ls -lh release_files/
@@ -137,6 +135,5 @@ jobs:
             * **Device:** POCO F6 / Redmi Turbo 3 (`peridot` · SM8635)
             * **Kernel Branch:** `${{ github.ref_name }}` @ `${{ github.sha }}`
             * **Toolchain:** Neutron Clang ${{ env.NEUTRON_BUILD }}
-          files: |
-            release_files/*.zip
-            release_files/*.ko
+          files: release_files/*.zip
+          
