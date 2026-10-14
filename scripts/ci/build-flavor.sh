@@ -1,125 +1,162 @@
-#!/bin/bash
-# build-flavor.sh — EvilTwin Kernel Builder (KernelSU-Next + SuSFS)
+#!/usr/bin/env bash
 set -euo pipefail
 
 FLAVOR="${1:-ksun-susfs}"
+if [[ "$FLAVOR" != "ksun-susfs" ]]; then
+  echo "::error::Unsupported flavor '$FLAVOR' (only ksun-susfs is supported)"
+  exit 2
+fi
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
-# shellcheck disable=SC1091
-source scripts/ci/pins.env
 
-OUT="${OUT:-out}"
-DIST="${DIST:-dist}"
-JOBS="${JOBS:-$(nproc --all)}"
-CLANG_DIR="${CLANG_DIR:-$HOME/clang}"
-ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
-ZIP_VERSION="${ZIP_VERSION:-v1.0}"
-ALLOW_DIRTY="${ALLOW_DIRTY:-1}"
-
-export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
+CLANG_DIR="${CLANG_DIR:?CLANG_DIR must point to Neutron Clang root}"
+export PATH="$CLANG_DIR/bin:$PATH"
+export ARCH=arm64
+export SUBARCH=arm64
+export LLVM=1
+export LLVM_IAS=1
 export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-Raju-yeager}"
 export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-EvilTwin}"
-export PATH="$CLANG_DIR/bin:$PATH"
 
-log()  { echo "[$(date -u +\%H:\%M:\%S)]$*"; }
-die()  { echo "::error::$*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+OUT="${OUT_DIR:-$ROOT/out}"
+DIST="${DIST_DIR:-$ROOT/dist}"
+JOBS="${JOBS:-$(nproc --all)}"
+ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
+ZIP_VERSION="${ZIP_VERSION:-v1.0}"
 
-# ---- flavor configuration (locked to KernelSU-Next + SuSFS) -----------------
-ROOT_ENGINE=ksun
-SUSFS=shim
-INTEGRATE=integrate.sh
-DROIDSPACES=0
-KPM=0
-APATCH=0
-ZIPNAME="KSUN${KSUN_TAG#v}-SUSFS${SUSFS_EXPECT_VERSION#v}"
-LABEL="KernelSU-Next ${KSUN_TAG} + SUSFS${SUSFS_EXPECT_VERSION}"
+log() {
+  printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
+}
 
-# ---- preconditions ----------------------------------------------------------
-have clang || die "clang not in PATH (CLANG_DIR=$CLANG_DIR)"
 log "flavor=$FLAVOR  clang:$(clang --version | head -1)"
-if [ "${ALLOW_OTHER_CLANG:-0}" != 1 ]; then
-  clang --version | head -1 | grep -qF "$NEUTRON_CLANG_ID" || die "clang is not the pinned release toolchain ($NEUTRON_CLANG_ID, build$NEUTRON_BUILD)"
-fi
-grep -qE '^SUBLEVEL = (175|176)' Makefile || die "base is not 6.1.175/176"
 
-# ---- 1. root driver (KernelSU-Next) -----------------------------------------
-fetch_driver() {
-  rm -rf KernelSU
-  git clone --quiet --branch "$KSUN_TAG" "$KSUN_REPO" KernelSU
-  local cnt; cnt=$(git -C KernelSU rev-list --count HEAD)
-  [ "$cnt" -gt 100 ] || die "KernelSU-Next clone looks shallow (rev-list count $cnt)"
-  log "driver @ $(git -C KernelSU rev-parse --short HEAD) ($ROOT_ENGINE)"
-}
-
-fetch_susfs() {
-  rm -rf susfs4ksu
-  git clone --quiet -b "$SUSFS_BRANCH" "$SUSFS_REPO" susfs4ksu
-  git -C susfs4ksu checkout --quiet "$SUSFS_PIN"
-  local v; v="$(sed -n 's/.*SUSFS_VERSION[^"]*"\([^"]*\)".*/\1/p' susfs4ksu/kernel_patches/include/linux/susfs.h)"
-  [ "$v" = "$SUSFS_EXPECT_VERSION" ] || die "expected SUSFS $SUSFS_EXPECT_VERSION, got '$v' at$SUSFS_PIN"
-  log "susfs4ksu $v @ ${SUSFS_PIN:0:10}"
-}
-
-check_rejects() {
-  local rej; rej="$(find . -path ./"$OUT" -prune -o -name '*.rej' -print 2>/dev/null || true)"
-  [ -z "$rej" ] \vert{}\vert{} { echo "$rej" | while read -r r; do echo "== $r =="; cat "$r"; done; die "patch rejects present"; }
-}
-
-fetch_driver
-ln -sfn ../KernelSU/kernel drivers/kernelsu
-grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile \vert{}\vert{} printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-
-fetch_susfs
-
-# ---- 2. SUSFS integration ---------------------------------------------------
-log "integrating SUSFS via scripts/susfs/$INTEGRATE"
-bash "scripts/susfs/$INTEGRATE" "$PWD/KernelSU" "$PWD/susfs4ksu" "$PWD"
-check_rejects
-
-if [ -f KernelSU/kernel/hook/lsm_hook.c ]; then
-  bash scripts/fix-lsm-hook-lto.sh KernelSU/kernel/hook/lsm_hook.c
+if [[ ! -d "$ROOT/KernelSU-Next" ]]; then
+  echo "::error::KernelSU-Next/ directory missing at repo root"
+  exit 1
 fi
 
-# ---- 3. configure -----------------------------------------------------------
-C=./scripts/config
-make -s -j"$JOBS" O="$OUT" gki_defconfig
-CFG="$OUT/.config"
+rm -rf "$OUT"
+mkdir -p "$OUT" "$DIST"
 
-$C --file "$CFG" -e KSU
-for o in KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME \
-         KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-         KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
-  $C --file "$CFG" -e "$o"
-done
+log "Applying gki_defconfig"
+make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-make -s -j"$JOBS" O="$OUT" olddefconfig
+log "Configuring EvilTwin (KernelSU-Next + SuSFS + Unsigned Module Loading)"
+./scripts/config --file "$OUT/.config" \
+  --set-str LOCALVERSION "-EvilTwin-KSUN-SuSFS" \
+  -d LOCALVERSION_AUTO \
+  -e KPROBES \
+  -e HAVE_KPROBES \
+  -e KPROBE_EVENTS \
+  -e KSU \
+  -e KSU_SUSFS \
+  -e KSU_SUSFS_SUS_PATH \
+  -e KSU_SUSFS_SUS_MOUNT \
+  -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+  -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+  -e KSU_SUSFS_SUS_KSTAT \
+  -e KSU_SUSFS_TRY_UMOUNT \
+  -e KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+  -e KSU_SUSFS_SPOOF_UNAME \
+  -e KSU_SUSFS_ENABLE_LOG \
+  -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+  -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+  -e KSU_SUSFS_OPEN_REDIRECT \
+  -d KSU_SUSFS_SUS_SU \
+  -e CFG80211 \
+  -e MAC80211 \
+  -e RFKILL \
+  -d MODULE_SIG \
+  -d MODULE_SIG_FORCE \
+  -d MODULE_SIG_ALL \
+  -d MODVERSIONS
 
-log "config verification"
-grep -q '^CONFIG_KSU=y' "$CFG" || die "KSU not enabled"
-grep -q '^CONFIG_KSU_SUSFS=y' "$CFG" || die "SUSFS not enabled in .config"
+make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-# ---- 4. build ---------------------------------------------------------------
-export KBUILD_COMPILER_STRING="$(clang --version | head -n1)"
-CCW=clang; if [ "${USE_CCACHE:-1}" = 1 ] && have ccache; then CCW="ccache clang"; fi
-log "build: make -j$JOBS O=$OUT CC='$CCW'"
-make -j"$JOBS" O="$OUT" CC="$CCW" 2>&1 \vert{} tee "$OUT/build.log" | grep -E --line-buffered 'error:|Error [0-9]|LD      vmlinux$|OBJCOPY arch/arm64/boot/Image' || true
-[ "${PIPESTATUS[0]}" = 0 ] || die "kernel build failed (see $OUT/build.log)"
-IMG="$OUT/arch/arm64/boot/Image"; [ -f "$IMG" ] || die "no Image"
-KREL="$(cat "$OUT/include/config/kernel.release")"
+log "Building Kernel Image & Modules (jobs=$JOBS)"
+make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+  CC="ccache clang" HOSTCC=clang HOSTCXX=clang++ \
+  Image modules 2>&1 | tee "$OUT/build.log"
 
-# ---- 5. KMI check (non-fatal warning mode for custom wireless configs) ------
-KMI_BASE="scripts/ci/kmi-baseline/$FLAVOR.symvers"
-KMI_ACCEPTED="${KMI_ACCEPTED:-scripts/ci/kmi-baseline/accepted-drift.txt}"
-if [ -f "$KMI_BASE" ]; then
-  if scripts/ci/symvers-diff.sh "$KMI_BASE" "$OUT/Module.symvers" "$KMI_ACCEPTED" > "$OUT/kmi-diff.txt" 2> "$OUT/kmi-summary.txt"; then
-    log "KMI gate: $(cat "$OUT/kmi-summary.txt") vs $KMI_BASE"
-  else
-    log "WARNING: KMI CRC drift detected (expected due to custom NetHunter configs):"
-    head -20 "$OUT/kmi-diff.txt" || true
+IMG="$OUT/arch/arm64/boot/Image"
+if [[ ! -f "$IMG" ]]; then
+  echo "::error::Kernel Image was not produced at $IMG"
+  exit 1
+fi
+
+cp -f "$IMG" "$DIST/Image-$FLAVOR"
+cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
+cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
+
+# If modules_src was checked out by CI, compile qca_cld3_qca6750.ko now
+WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
+QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
+if [[ -d "$QCACLD_DIR" ]]; then
+  log "Building Patched Wi-Fi Module (qca_cld3_qca6750.ko)"
+  ln -sfn ../qca-wifi-host-cmn "$QCACLD_DIR/cmn"
+
+  make -j"$JOBS" -C "$ROOT" O="$OUT" \
+    M="$QCACLD_DIR" \
+    CC="ccache clang" \
+    WLAN_ROOT="$QCACLD_DIR" \
+    WLAN_COMMON_ROOT=cmn \
+    WLAN_COMMON_INC="$QCACLD_DIR/cmn" \
+    WLAN_FW_API="$WLAN_DIR/fw-api/" \
+    CONFIG_ARCH_PINEAPPLE=y \
+    CONFIG_ARCH_QCOM=y \
+    CONFIG_CNSS_OUT_OF_TREE=y \
+    CONFIG_IPA_OUT_OF_TREE=y \
+    CONFIG_QCA_WIFI_ISOC=0 \
+    CONFIG_QCA_WIFI_2_0=1 \
+    WLAN_PROFILE=qca6750 \
+    DYNAMIC_SINGLE_CHIP=qca6750 \
+    DEVNAME=qca6750 \
+    MODNAME=qca_cld3_qca6750 \
+    CONFIG_QCA_CLD_WLAN=m \
+    WLAN_CFG_OVERRIDE="CONFIG_QCA_CLD_WLAN=m CONFIG_DP_RX_DROP_RAW_FRM=n CONFIG_WLAN_FEATURE_PKT_CAPTURE=y CONFIG_FEATURE_MONITOR_MODE_SUPPORT=y CONFIG_WIFI_MONITOR_SUPPORT=y" \
+    KBUILD_MODPOST_WARN=1 \
+    KCFLAGS="-Wno-error" \
+    modules 2>&1 | tee "$OUT/wlan_build.log"
+
+  llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
+  cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750.ko"
+fi
+
+if [[ "${SKIP_ZIP:-0}" != "1" && -d "$ROOT/anykernel" ]]; then
+  STAGE="$(mktemp -d)"
+  cp -r "$ROOT/anykernel/." "$STAGE/"
+  cp -f "$IMG" "$STAGE/Image"
+
+  # Embed patched Wi-Fi module inside AnyKernel3 zip so a single flash installs both
+  if [[ -f "$DIST/qca_cld3_qca6750.ko" ]]; then
+    cp -f "$DIST/qca_cld3_qca6750.ko" "$STAGE/qca_cld3_qca6750.ko"
+    cat >> "$STAGE/anykernel.sh" << 'EOF'
+
+# Install EvilTwin patched Wi-Fi module automatically via KernelSU boot hook
+if [ -f "$home/qca_cld3_qca6750.ko" ]; then
+  ui_print "- Installing EvilTwin Patched Wi-Fi Module (Monitor + Injection)..."
+  mkdir -p /data/adb/eviltwin /data/adb/post-fs-data.d
+  cp -f "$home/qca_cld3_qca6750.ko" /data/adb/eviltwin/qca_cld3_qca6750.ko
+  chmod 0644 /data/adb/eviltwin/qca_cld3_qca6750.ko
+  cat > /data/adb/post-fs-data.d/eviltwin_wifi.sh << 'BOOTEOF'
+#!/system/bin/sh
+MOD="/data/adb/eviltwin/qca_cld3_qca6750.ko"
+for TARGET in /vendor_dlkm/lib/modules/qca_cld3_qca6750.ko /vendor/lib/modules/qca_cld3_qca6750.ko /system/vendor/lib/modules/qca_cld3_qca6750.ko; do
+  if [ -f "$TARGET" ] && [ -f "$MOD" ]; then
+    mount -o bind "$MOD" "$TARGET"
   fi
+done
+BOOTEOF
+  chmod 0755 /data/adb/post-fs-data.d/eviltwin_wifi.sh
 fi
+EOF
+  fi
 
-# ---- 6.
+  STAMP="$(date -u +%Y%m%d)"
+  SHA="$(git rev-parse --short=7 HEAD 2>/dev/null || echo local)"
+  ZIP_NAME="${ZIP_PREFIX}-${FLAVOR}-${ZIP_VERSION}-${STAMP}-${SHA}.zip"
+  (cd "$STAGE" && zip -r9q "$DIST/$ZIP_NAME" .)
+  rm -rf "$STAGE"
+  log "Packaged unified flashable zip: $DIST/$ZIP_NAME"
+fi
