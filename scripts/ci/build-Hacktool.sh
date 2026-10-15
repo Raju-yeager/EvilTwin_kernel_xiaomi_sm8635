@@ -104,6 +104,21 @@ fi
 
 sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c" || true
 
+# Fix KernelSU-Next v3.4+ missing sucompat symbols in fs/exec.c
+if grep -q "ksu_handle_post_execveat_sucompat" "$ROOT/fs/exec.c"; then
+  log "Injecting weak sucompat stubs into fs/exec.c..."
+  cat << 'EOF' >> "$ROOT/fs/exec.c"
+
+/* Fallback stubs for KernelSU-Next missing sucompat */
+bool __weak ksu_handle_execveat_sucompat(int *fd, struct filename *filename, void *argv, void *envp, int *flags) {
+    return false;
+}
+bool __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename *filename, void *argv, void *envp, int *flags) {
+    return false;
+}
+EOF
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
 
