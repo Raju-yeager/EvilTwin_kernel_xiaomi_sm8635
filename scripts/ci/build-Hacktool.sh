@@ -97,7 +97,7 @@ open(p, "w").writelines(out)
 log "Applying gki_defconfig"
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-log "Configuring EvilTwin (KernelSU-Next + SuSFS + Strict GKI KABI Lock)"
+log "Configuring EvilTwin (KernelSU-Next + SuSFS + Strict GKI KABI Lock + CFG80211)"
 ./scripts/config --file "$OUT/.config" \
   --set-str LOCALVERSION "-EvilTwin-KSUN-SuSFS" \
   -d LOCALVERSION_AUTO \
@@ -124,6 +124,7 @@ log "Configuring EvilTwin (KernelSU-Next + SuSFS + Strict GKI KABI Lock)"
   -d UNWIND_TABLES \
   -d SCHED_BORE \
   -d RT_SOFTIRQ_AWARE_SCHED \
+  -d SCHED_HRTICK \
   -d RCU_BOOST \
   -d RCU_LAZY \
   -d BOEFFLA_WL_BLOCKER \
@@ -146,21 +147,28 @@ log "Configuring EvilTwin (KernelSU-Next + SuSFS + Strict GKI KABI Lock)"
   -e CGROUP_PIDS \
   -e CGROUP_DEVICE \
   -e CGROUP_PERF \
-  -e CGROUP_MISC
+  -e CGROUP_MISC \
+  -e RFKILL \
+  -e CFG80211 \
+  -e NL80211_TESTMODE \
+  -e CFG80211_REQUIRE_SIGNED_REGDB \
+  -e CFG80211_USE_KERNEL_REGDB_KEYS \
+  -e CFG80211_DEFAULT_PS \
+  -e CFG80211_CRDA_SUPPORT \
+  -e CFG80211_WEXT \
+  -e MAC80211
 
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-# Force-disable UNWIND_TABLES if any Kconfig 'select' re-enabled it during olddefconfig
-if grep -q "^CONFIG_UNWIND_TABLES=y" "$OUT/.config" || grep -q "^CONFIG_SCHED_BORE=y" "$OUT/.config"; then
-  log "WARNING: Kconfig re-enabled ABI-breaking symbols; forcing off..."
-  sed -i 's/^CONFIG_UNWIND_PATCH_PAC_INTO_SCS=y/# CONFIG_UNWIND_PATCH_PAC_INTO_SCS is not set/' "$OUT/.config"
-  sed -i 's/^CONFIG_DYNAMIC_SCS=y/# CONFIG_DYNAMIC_SCS is not set/' "$OUT/.config"
-  sed -i 's/^CONFIG_UNWIND_TABLES=y/# CONFIG_UNWIND_TABLES is not set/' "$OUT/.config"
-  sed -i 's/^CONFIG_SCHED_BORE=y/# CONFIG_SCHED_BORE is not set/' "$OUT/.config"
-fi
+# Force-disable UNWIND_TABLES, SCHED_BORE, and SCHED_HRTICK if Kconfig 'select' re-enabled them
+sed -i 's/^CONFIG_UNWIND_PATCH_PAC_INTO_SCS=y/# CONFIG_UNWIND_PATCH_PAC_INTO_SCS is not set/' "$OUT/.config"
+sed -i 's/^CONFIG_DYNAMIC_SCS=y/# CONFIG_DYNAMIC_SCS is not set/' "$OUT/.config"
+sed -i 's/^CONFIG_UNWIND_TABLES=y/# CONFIG_UNWIND_TABLES is not set/' "$OUT/.config"
+sed -i 's/^CONFIG_SCHED_BORE=y/# CONFIG_SCHED_BORE is not set/' "$OUT/.config"
+sed -i 's/^CONFIG_SCHED_HRTICK=y/# CONFIG_SCHED_HRTICK is not set/' "$OUT/.config"
 
-log "Verifying KABI-critical config state:"
-grep -E "CONFIG_(UNWIND_TABLES|SCHED_BORE|HZ=|UCLAMP_BUCKETS_COUNT|CFS_BANDWIDTH|TASK_DELAY_ACCT|RSEQ)" "$OUT/.config" || true
+log "Verifying KABI-critical & Wi-Fi config state:"
+grep -E "CONFIG_(UNWIND_TABLES|SCHED_BORE|SCHED_HRTICK|HZ=|UCLAMP_BUCKETS_COUNT|CFG80211|NL80211_TESTMODE|MAC80211)" "$OUT/.config" || true
 
 log "Building Kernel Image & Modules (jobs=$JOBS)"
 make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
