@@ -40,7 +40,6 @@ log() {
 log "flavor=$FLAVOR  ksun=$KSUN_TAG  clang:$(clang --version | head -1)"
 
 # 1. Sync kernel source to latest khargosxh18/android_kernel_xiaomi_sm8635 (Vibranium base)
-#    while preserving EvilTwin scripts/, anykernel/, modules_src/, and .github/
 log "Syncing kernel source tree to latest khargosxh18/android_kernel_xiaomi_sm8635..."
 TMP_VIB="$(mktemp -d)"
 git clone --depth=1 "$VIBRANIUM_REPO" "$TMP_VIB"
@@ -106,15 +105,15 @@ sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak 
 
 # Fix KernelSU-Next v3.4+ missing sucompat symbols in fs/exec.c
 if grep -q "ksu_handle_post_execveat_sucompat" "$ROOT/fs/exec.c"; then
-  log "Injecting weak sucompat stubs into fs/exec.c..."
+  log "Injecting correct weak sucompat stubs into fs/exec.c..."
   cat << 'EOF' >> "$ROOT/fs/exec.c"
 
-/* Fallback stubs for KernelSU-Next missing sucompat */
-bool __weak ksu_handle_execveat_sucompat(int *fd, struct filename *filename, void *argv, void *envp, int *flags) {
-    return false;
+/* Fallback stubs for KernelSU-Next v3.4+ missing sucompat */
+int __weak ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {
+    return 0;
 }
-bool __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename *filename, void *argv, void *envp, int *flags) {
-    return false;
+int __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {
+    return 0;
 }
 EOF
 fi
@@ -122,7 +121,7 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
 
-# 3. Generate Vibranium's exact defconfig (gki_defconfig + pineapple_GKI.config + peridot_GKI.config)
+# 3. Generate Vibranium's exact defconfig
 log "Generating Vibranium base config..."
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
@@ -224,14 +223,14 @@ cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
 cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
 
-# 4. Compile patched qca_cld3_qca6750.ko from modules_src against Vibranium source
+# 4. Compile patched qca_cld3_qca6750.ko from modules_src
 WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
 QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
 if [[ -d "$QCACLD_DIR" ]]; then
   log "Building Patched Wi-Fi Module (qca_cld3_qca6750.ko)"
   ln -sfn ../qca-wifi-host-cmn "$QCACLD_DIR/cmn"
 
-  # Append the 43 vendor_dlkm (cnss/icnss) symbol CRCs matching the exact tab count of $OUT/Module.symvers
+  # Append 43 vendor_dlkm symbol CRCs
   python3 - "$OUT/Module.symvers" << 'PYEOF'
 import sys
 
@@ -322,20 +321,6 @@ PYEOF
     modules 2>&1 | tee "$OUT/wlan_build.log"
 
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
-  cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750.ko"
-
-  # Also generate a standalone module with vermagic matched to stock 6.1.174-Vibranium-V18+
-  python3 - "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750-stock-vibranium.ko" << 'PYEOF'
-import sys, re
-data = bytearray(open(sys.argv[1], "rb").read())
-m = re.search(b"vermagic=[^\x00]+\x00", data)
-if m:
-    old = m.group(0)
-    new = b"vermagic=6.1.174-Vibranium-V18+ SMP preempt mod_unload modversions aarch64\x00"
-    if len(new) <= len(old):
-        data[m.start():m.end()] = new + b"\x00" * (len(old) - len(new))
-open(sys.argv[2], "wb").write(data)
-PYEOF
 fi
 
 # 5. Package Unified AnyKernel3 Zip
@@ -354,4 +339,88 @@ if [[ "${SKIP_ZIP:-0}" != "1" && -d "$ROOT/anykernel" ]]; then
   (cd "$STAGE" && zip -r9q "$DIST/$ZIP_NAME" .)
   rm -rf "$STAGE"
   log "Packaged unified flashable zip: $DIST/$ZIP_NAME"
+fi
+
+# 6. Build Universal Magisk/KernelSU Module
+if [[ -f "$QCACLD_DIR/qca_cld3_qca6750.ko" ]]; then
+  log "Packaging Universal Magisk/KernelSU Module..."
+  MAGISK_DIR="$(mktemp -d)"
+  mkdir -p "$MAGISK_DIR/META-INF/com/google/android"
+  mkdir -p "$MAGISK_DIR/system/bin"
+
+  curl -sL -o "$MAGISK_DIR/META-INF/com/google/android/update-binary" "https://raw.githubusercontent.com/topjohnwu/Magisk/master/scripts/module_installer.sh"
+  chmod +x "$MAGISK_DIR/META-INF/com/google/android/update-binary"
+  echo "#MAGISK" > "$MAGISK_DIR/META-INF/com/google/android/updater-script"
+
+  cat << 'EOF' > "$MAGISK_DIR/module.prop"
+id=eviltwin-wifi
+name=Universal EvilTwin Wi-Fi (Monitor Mode)
+version=v1.0
+versionCode=1
+author=Raju-yeager
+description=Native monitor mode (con_mode=4) and raw packet injection for POCO F6 (peridot). Automatically adapts to ANY custom kernel on every boot.
+EOF
+
+  cat << 'EOF' > "$MAGISK_DIR/customize.sh"
+ui_print "- Installing Universal EvilTwin Wi-Fi"
+ui_print "- The module will automatically patch itself to match"
+ui_print "- your specific kernel version on the next boot."
+EOF
+
+  cp "$QCACLD_DIR/qca_cld3_qca6750.ko" "$MAGISK_DIR/qca_cld3_qca6750_original.ko"
+
+  cat << 'EOF' > "$MAGISK_DIR/post-fs-data.sh"
+#!/system/bin/sh
+MODDIR=${0%/*}
+KO_FILE="$MODDIR/qca_cld3_qca6750.ko"
+ORIG_FILE="$MODDIR/qca_cld3_qca6750_original.ko"
+KVER="$(uname -r)"
+
+if [ ! -f "$KO_FILE" ] || ! grep -q "vermagic=$KVER " "$KO_FILE"; then
+    cp "$ORIG_FILE" "$KO_FILE"
+    OFFSET=$(grep -aob "vermagic=" "$KO_FILE" | head -n 1 | cut -d: -f1)
+    if [ -n "$OFFSET" ]; then
+        printf "vermagic=%s SMP preempt mod_unload modversions aarch64\0" "$KVER" > "$MODDIR/new_vermagic"
+        dd if="$MODDIR/new_vermagic" of="$KO_FILE" bs=1 seek="$OFFSET" conv=notrunc status=none
+        rm -f "$MODDIR/new_vermagic"
+    fi
+fi
+EOF
+  chmod +x "$MAGISK_DIR/post-fs-data.sh"
+
+  cat << 'EOF' > "$MAGISK_DIR/system/bin/wlan-mode"
+#!/system/bin/sh
+MODDIR="/data/adb/modules/eviltwin-wifi"
+STOCK_KO=$(find /vendor_dlkm /vendor /system -type f -name qca_cld3_qca6750.ko | head -n 1)
+MOD_KO="$MODDIR/qca_cld3_qca6750.ko"
+
+if [ "$1" = "mon" ]; then
+    echo "[+] Enabling Monitor Mode..."
+    ip link set wlan0 down
+    rmmod qca_cld3_qca6750 2>/dev/null
+    mount --bind "$MOD_KO" "$STOCK_KO"
+    insmod "$STOCK_KO"
+    echo 4 > /sys/module/qca_cld3_qca6750/parameters/con_mode
+    svc wifi disable
+    ip link set wlan0 up
+    [ -n "$2" ] && iw dev wlan0 set channel "$2"
+    echo "[+] wlan0 is now in Monitor Mode (con_mode=4)"
+elif [ "$1" = "sta" ]; then
+    echo "[+] Restoring Normal Android Wi-Fi..."
+    ip link set wlan0 down
+    umount "$STOCK_KO" 2>/dev/null
+    rmmod qca_cld3_qca6750 2>/dev/null
+    insmod "$STOCK_KO"
+    echo 0 > /sys/module/qca_cld3_qca6750/parameters/con_mode
+    svc wifi enable
+    echo "[+] Normal Android Wi-Fi restored."
+else
+    echo "Usage: su -c wlan-mode [mon <channel> | sta]"
+fi
+EOF
+  chmod +x "$MAGISK_DIR/system/bin/wlan-mode"
+
+  (cd "$MAGISK_DIR" && zip -r9q "$DIST/Universal-EvilTwin-WiFi-Magisk-${ZIP_VERSION}.zip" .)
+  rm -rf "$MAGISK_DIR"
+  log "Packaged Universal Magisk Module: $DIST/Universal-EvilTwin-WiFi-Magisk-${ZIP_VERSION}.zip"
 fi
