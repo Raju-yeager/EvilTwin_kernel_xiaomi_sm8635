@@ -6,9 +6,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 KSUN_REPO="https://github.com/KernelSU-Next/KernelSU-Next"
-KSUN_TAG="v3.3.0"
+# Dynamically fetch the latest KernelSU-Next release tag (e.g., v3.4.2), fallback to v3.3.0
+KSUN_TAG="${KSUN_TAG:-$(curl -sL "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest" | grep -oE '"tag_name":\s*"[^"]+"' | head -n1 | cut -d'"' -f4 || true)}"
+[[ -z "$KSUN_TAG" ]] && KSUN_TAG="v3.3.0"
+
 SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
-SUSFS_PIN="4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
+SUSFS_BRANCH="${SUSFS_BRANCH:-gki-android14-6.1}"
+SUSFS_FALLBACK_PIN="4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
+VIBRANIUM_REPO="https://github.com/khargosxh18/android_kernel_xiaomi_sm8635.git"
 
 CLANG_DIR="${CLANG_DIR:?CLANG_DIR must point to Clang root}"
 export PATH="$CLANG_DIR/bin:$PATH"
@@ -32,28 +37,24 @@ log() {
   printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
 }
 
-log "flavor=$FLAVOR  clang:$(clang --version | head -1)"
+log "flavor=$FLAVOR  ksun=$KSUN_TAG  clang:$(clang --version | head -1)"
 
-# 1. Swap kernel source to khargosxh18/android_kernel_xiaomi_sm8635 (Vibranium 6.1.174 base)
-#    while preserving our EvilTwin scripts/, anykernel/, and modules_src/!
-if ! grep -q "SUBLEVEL = 174" "$ROOT/Makefile" 2>/dev/null; then
-  log "Switching kernel source tree to khargosxh18/android_kernel_xiaomi_sm8635 (Vibranium base)..."
-  TMP_VIB="$(mktemp -d)"
-  git clone --depth=1 https://github.com/khargosxh18/android_kernel_xiaomi_sm8635.git "$TMP_VIB"
+# 1. Sync kernel source to latest khargosxh18/android_kernel_xiaomi_sm8635 (Vibranium base)
+#    while preserving EvilTwin scripts/, anykernel/, modules_src/, and .github/
+log "Syncing kernel source tree to latest khargosxh18/android_kernel_xiaomi_sm8635..."
+TMP_VIB="$(mktemp -d)"
+git clone --depth=1 "$VIBRANIUM_REPO" "$TMP_VIB"
 
-  # Preserve EvilTwin custom directories
-  cp -a "$ROOT/scripts/ci" "$TMP_VIB/scripts/"
-  cp -a "$ROOT/scripts/susfs" "$TMP_VIB/scripts/"
-  [[ -d "$ROOT/anykernel" ]] && cp -a "$ROOT/anykernel" "$TMP_VIB/"
-  [[ -d "$ROOT/modules_src" ]] && cp -a "$ROOT/modules_src" "$TMP_VIB/"
-  [[ -d "$ROOT/.github" ]] && cp -a "$ROOT/.github" "$TMP_VIB/"
+cp -a "$ROOT/scripts/ci" "$TMP_VIB/scripts/"
+cp -a "$ROOT/scripts/susfs" "$TMP_VIB/scripts/"
+[[ -d "$ROOT/anykernel" ]] && cp -a "$ROOT/anykernel" "$TMP_VIB/"
+[[ -d "$ROOT/modules_src" ]] && cp -a "$ROOT/modules_src" "$TMP_VIB/"
+[[ -d "$ROOT/.github" ]] && cp -a "$ROOT/.github" "$TMP_VIB/"
 
-  # Replace working tree with Vibranium source + EvilTwin additions
-  find "$ROOT" -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
-  cp -a "$TMP_VIB/." "$ROOT/"
-  rm -rf "$TMP_VIB"
-  log "Kernel source is now Vibranium ($(head -n 4 "$ROOT/Makefile" | tr '\n' ' '))"
-fi
+find "$ROOT" -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+cp -a "$TMP_VIB/." "$ROOT/"
+rm -rf "$TMP_VIB"
+log "Kernel source synced: $(head -n 4 "$ROOT/Makefile" | tr '\n' ' ')"
 
 # Fix OpenSSL 3.0 undeclared 'key_pass' in certs/extract-cert.c on Ubuntu 24.04
 if [[ -f "$ROOT/certs/extract-cert.c" ]]; then
@@ -61,29 +62,44 @@ if [[ -f "$ROOT/certs/extract-cert.c" ]]; then
   sed -i '1i static const char *key_pass;' "$ROOT/certs/extract-cert.c"
 fi
 
-# 2. Integrate KernelSU-Next v3.3.0 & SuSFS
+# 2. Integrate Latest KernelSU-Next & SuSFS (with automatic fallback to tested pin on conflict)
 KSUN_DIR="$ROOT/KernelSU-Next"
 S4K_DIR="$ROOT/susfs4ksu"
 
 if [[ ! -d "$KSUN_DIR" ]]; then
   log "Cloning KernelSU-Next ($KSUN_TAG)..."
-  git clone --branch "$KSUN_TAG" "$KSUN_REPO" "$KSUN_DIR"
+  git clone --depth=1 --branch "$KSUN_TAG" "$KSUN_REPO" "$KSUN_DIR" || {
+    log "Tag $KSUN_TAG clone failed; falling back to v3.3.0..."
+    git clone --depth=1 --branch "v3.3.0" "$KSUN_REPO" "$KSUN_DIR"
+  }
   rm -rf "$ROOT/drivers/kernelsu"
   ln -sfn "$KSUN_DIR/kernel" "$ROOT/drivers/kernelsu"
   grep -q "kernelsu" "$ROOT/drivers/Makefile" || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$ROOT/drivers/Makefile"
   grep -q "drivers/kernelsu/Kconfig" "$ROOT/drivers/Kconfig" || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "$ROOT/drivers/Kconfig"
 
-  log "Fetching susfs4ksu ($SUSFS_PIN)..."
+  log "Fetching latest susfs4ksu ($SUSFS_BRANCH)..."
   rm -rf "$S4K_DIR"
-  mkdir -p "$S4K_DIR"
-  git -C "$S4K_DIR" init -q
-  git -C "$S4K_DIR" remote add origin "$SUSFS_REPO"
-  git -C "$S4K_DIR" fetch --depth=1 origin "$SUSFS_PIN"
-  git -C "$S4K_DIR" checkout -q FETCH_HEAD
+  git clone --depth=1 --branch "$SUSFS_BRANCH" "$SUSFS_REPO" "$S4K_DIR" || {
+    mkdir -p "$S4K_DIR"
+    git -C "$S4K_DIR" init -q
+    git -C "$S4K_DIR" remote add origin "$SUSFS_REPO"
+    git -C "$S4K_DIR" fetch --depth=1 origin "$SUSFS_FALLBACK_PIN"
+    git -C "$S4K_DIR" checkout -q FETCH_HEAD
+  }
 
-  log "Running scripts/susfs/integrate.sh..."
   chmod +x "$ROOT/scripts/susfs/integrate.sh"
-  "$ROOT/scripts/susfs/integrate.sh" "$KSUN_DIR" "$S4K_DIR" "$ROOT"
+  log "Running scripts/susfs/integrate.sh..."
+  if ! "$ROOT/scripts/susfs/integrate.sh" "$KSUN_DIR" "$S4K_DIR" "$ROOT"; then
+    log "Latest SuSFS had a conflict; falling back to tested SuSFS pin ($SUSFS_FALLBACK_PIN)..."
+    git -C "$KSUN_DIR" checkout -- . || true
+    rm -rf "$S4K_DIR"
+    mkdir -p "$S4K_DIR"
+    git -C "$S4K_DIR" init -q
+    git -C "$S4K_DIR" remote add origin "$SUSFS_REPO"
+    git -C "$S4K_DIR" fetch --depth=1 origin "$SUSFS_FALLBACK_PIN"
+    git -C "$S4K_DIR" checkout -q FETCH_HEAD
+    "$ROOT/scripts/susfs/integrate.sh" "$KSUN_DIR" "$S4K_DIR" "$ROOT"
+  fi
 fi
 
 sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c" || true
@@ -189,14 +205,11 @@ if [[ ! -f "$IMG" ]]; then
   exit 1
 fi
 
-log "Checking exported KABI CRCs for module_layout, runqueues, and cpu_number:"
-grep -E "\b(module_layout|runqueues|cpu_number)\b" "$OUT/Module.symvers" || true
-
 cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
 cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
 
-# 4. Compile patched qca_cld3_qca6750.ko from modules_src against Vibranium source!
+# 4. Compile patched qca_cld3_qca6750.ko from modules_src against Vibranium source
 WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
 QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
 if [[ -d "$QCACLD_DIR" ]]; then
