@@ -25,6 +25,9 @@ JOBS="${JOBS:-$(nproc --all)}"
 ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
 ZIP_VERSION="${ZIP_VERSION:-v1.0}"
 
+# Suppress Clang macro & unused warning spam across both kernel and qca6750 builds
+WARN_FLAGS="-Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-misleading-indentation ${KCFLAGS:-}"
+
 log() {
   printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
 }
@@ -175,8 +178,9 @@ make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
 log "Building Kernel Image & Modules (jobs=$JOBS)"
 make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-  CC="ccache clang" HOSTCC=clang HOSTCXX=clang++ \
+  CC="ccache clang" HOSTCC="ccache clang" HOSTCXX="ccache clang++" \
   KBUILD_MODPOST_WARN=1 \
+  KCFLAGS="$WARN_FLAGS" \
   Image modules 2>&1 | tee "$OUT/build.log"
 
 IMG="$OUT/arch/arm64/boot/Image"
@@ -204,7 +208,7 @@ if [[ -d "$QCACLD_DIR" ]]; then
 
   make -j"$JOBS" -C "$ROOT" O="$OUT" \
     M="$QCACLD_DIR" \
-    CC="ccache clang" \
+    CC="ccache clang" HOSTCC="ccache clang" HOSTCXX="ccache clang++" \
     WLAN_ROOT="$QCACLD_DIR" \
     WLAN_COMMON_ROOT=cmn \
     WLAN_COMMON_INC="$QCACLD_DIR/cmn" \
@@ -222,7 +226,7 @@ if [[ -d "$QCACLD_DIR" ]]; then
     CONFIG_QCA_CLD_WLAN=m \
     WLAN_CFG_OVERRIDE="CONFIG_QCA_CLD_WLAN=m CONFIG_DP_RX_DROP_RAW_FRM=n CONFIG_FEATURE_MONITOR_MODE_SUPPORT=y CONFIG_WIFI_MONITOR_SUPPORT=y" \
     KBUILD_MODPOST_WARN=1 \
-    KCFLAGS="-Wno-error" \
+    KCFLAGS="-Wno-error $WARN_FLAGS" \
     modules 2>&1 | tee "$OUT/wlan_build.log"
 
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
