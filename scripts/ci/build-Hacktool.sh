@@ -203,11 +203,69 @@ if [[ -d "$QCACLD_DIR" ]]; then
   log "Building Patched Wi-Fi Module (qca_cld3_qca6750.ko)"
   ln -sfn ../qca-wifi-host-cmn "$QCACLD_DIR/cmn"
 
-  # Append the 43 vendor_dlkm (cnss/icnss) symbol CRCs (normalizing any spaces to strict TABs for modpost)
-  if [[ -f "$ROOT/scripts/ci/vendor_cnss.symvers" ]]; then
-    awk 'NF>=4 {print $1 "\t" $2 "\t" $3 "\t" $4}' "$ROOT/scripts/ci/vendor_cnss.symvers" >> "$OUT/Module.symvers"
-    log "Appended vendor cnss/icnss symbols to $OUT/Module.symvers (total entries: $(wc -l < "$OUT/Module.symvers"))"
-  fi
+  # Append the 43 vendor_dlkm (cnss/icnss) symbol CRCs matching the exact tab count of $OUT/Module.symvers
+  python3 - "$OUT/Module.symvers" << 'PYEOF'
+import sys
+
+symvers_path = sys.argv[1]
+lines = open(symvers_path, "r", encoding="utf-8", errors="ignore").read().splitlines()
+sample = lines[0] if lines else "0x00000000\tdummy\tvmlinux\tEXPORT_SYMBOL\t"
+num_tabs = sample.count("\t")
+
+vendor_syms = [
+    ("0xf35b1593", "__icnss_register_driver"),
+    ("0x62f5d9f4", "cld80211_get_genl_family"),
+    ("0x7f3db83b", "cnss_utils_get_wlan_derived_mac_address"),
+    ("0xdd04312a", "cnss_utils_get_wlan_mac_address"),
+    ("0x7cab32df", "cnss_utils_get_wlan_unsafe_channel"),
+    ("0x0e39f21c", "cnss_utils_increment_driver_load_cnt"),
+    ("0x83d6fb88", "cnss_utils_set_wlan_unsafe_channel"),
+    ("0xef048766", "cnss_utils_wlan_get_dfs_nol"),
+    ("0xb83d7182", "cnss_utils_wlan_set_dfs_nol"),
+    ("0x1a4d338d", "deregister_cld_cmd_cb"),
+    ("0xd42566f2", "icnss_allow_l1"),
+    ("0x8831b37b", "icnss_athdiag_read"),
+    ("0xaabf5c45", "icnss_athdiag_write"),
+    ("0x61e3742e", "icnss_exit_power_save"),
+    ("0xe32d9f2a", "icnss_force_wake_release"),
+    ("0x0f936194", "icnss_force_wake_request"),
+    ("0xc7db251a", "icnss_get_curr_therm_cdev_state"),
+    ("0x71358fe3", "icnss_get_mhi_state"),
+    ("0xd9cebef2", "icnss_get_msi_address"),
+    ("0x22af7d88", "icnss_get_msi_irq"),
+    ("0xf7f0c22c", "icnss_get_soc_info"),
+    ("0xa8b17f5a", "icnss_get_user_msi_assignment"),
+    ("0x71e6e153", "icnss_idle_restart"),
+    ("0x413458df", "icnss_idle_shutdown"),
+    ("0x354028de", "icnss_is_device_awake"),
+    ("0x9b5bd3f7", "icnss_is_fw_down"),
+    ("0xbadde3d4", "icnss_is_pci_ep_awake"),
+    ("0x49e4b3b1", "icnss_power_off"),
+    ("0x8f973526", "icnss_power_on"),
+    ("0xa35f4a41", "icnss_prevent_l1"),
+    ("0x6a21d2a9", "icnss_qmi_send"),
+    ("0xb8aa15ba", "icnss_set_fw_log_mode"),
+    ("0x46d9e785", "icnss_smmu_get_domain"),
+    ("0x3c92e266", "icnss_smmu_map"),
+    ("0xb71bf2a4", "icnss_thermal_cdev_register"),
+    ("0x188e10cc", "icnss_thermal_cdev_unregister"),
+    ("0x835eac09", "icnss_trigger_recovery"),
+    ("0x07cf14dc", "icnss_unregister_driver"),
+    ("0x254b144e", "icnss_wlan_disable"),
+    ("0x10b1edcc", "icnss_wlan_enable"),
+    ("0x14d2e4b6", "register_cld_cmd_cb"),
+    ("0xdff15e8a", "wcnss_prealloc_get"),
+    ("0x0521fc53", "wcnss_prealloc_put"),
+]
+
+existing = {l.split("\t")[1] for l in lines if "\t" in l}
+with open(symvers_path, "a", encoding="utf-8") as f:
+    for crc, name in vendor_syms:
+        if name not in existing:
+            extra_tabs = "\t" * max(0, num_tabs - 3)
+            f.write(f"{crc}\t{name}\tvmlinux\tEXPORT_SYMBOL{extra_tabs}\n")
+print(f"[+] Appended {len(vendor_syms)} vendor symbols with {num_tabs} tabs per line")
+PYEOF
 
   sed -i '/CONFIG_WLAN_FEATURE_PKT_CAPTURE/d' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
   sed -i 's/CONFIG_DP_RX_DROP_RAW_FRM=y/CONFIG_DP_RX_DROP_RAW_FRM=n/g' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
