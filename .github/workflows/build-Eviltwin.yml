@@ -1,181 +1,238 @@
 name: EvilTwin — Build Kernel + Patched Wi-Fi Driver
 
 on:
-  workflow_dispatch:
-    inputs:
-      release:
-        description: "Publish a GitHub Release with the unified flashable zip"
-        type: boolean
-        default: true
   push:
     branches: [ "17" ]
-    paths-ignore: [ '**/*.md', 'docs/**', 'assets/**' ]
-
-concurrency:
-  group: eviltwin-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Force build even if upstream has not changed"
+        required: false
+        default: "true"
+  schedule:
+    # Runs daily at 04:00 UTC (09:30 AM IST) to check for Vibranium / KSUN / SuSFS updates
+    - cron: '0 4 * * *'
 
 permissions:
   contents: write
 
-env:
-  EVILTWIN_VERSION: "v1.0"
-  ZIP_PREFIX: "EvilTwin"
-  KBUILD_BUILD_USER: "Raju-yeager"
-  KBUILD_BUILD_HOST: "EvilTwin"
-  NEUTRON_BUILD: "30062026"
-  NEUTRON_SHA256: b473a420d693a4e3bc71b56ec4283c0e3738f87d6ac37fa202bb0be5e0a07521
-  ANTMAN_COMMIT: 0b32c45e3ad83a953b4bc3fd2feb4ad3cc87c1e8
-  ANTMAN_SHA256: deef2dcf11568403c712432ecb7678ef62c3244054ccfee8510ef94a8a8fb04d
-  TELEGRAM_CHAT_ID: "@Evil_twin_peridot"
-
 jobs:
+  check-upstream:
+    name: Check Upstream Updates (Vibranium + KSUN + SuSFS)
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      upstream_state: ${{ steps.check.outputs.upstream_state }}
+      ksun_tag: ${{ steps.check.outputs.ksun_tag }}
+    steps:
+      - name: Compare Upstream SHAs Against Latest Release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VIB_SHA=$(git ls-remote https://github.com/khargosxh18/android_kernel_xiaomi_sm8635.git HEAD | awk '{print substr($1,1,7)}')
+          KSUN_TAG=$(curl -sL "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest" | grep -oE '"tag_name":\s*"[^"]+"' | head -n1 | cut -d'"' -f4 || true)
+          [[ -z "$KSUN_TAG" ]] && KSUN_TAG="v3.3.0"
+          SUSFS_SHA=$(git ls-remote https://gitlab.com/simonpunk/susfs4ksu.git refs/heads/gki-android14-6.1 | awk '{print substr($1,1,7)}')
+
+          STATE="vib:${VIB_SHA}_ksun:${KSUN_TAG}_susfs:${SUSFS_SHA}"
+          echo "Current upstream fingerprint: $STATE"
+          echo "upstream_state=$STATE" >> "$GITHUB_OUTPUT"
+          echo "ksun_tag=$KSUN_TAG" >> "$GITHUB_OUTPUT"
+
+          if [[ "${{ github.event_name }}" != "schedule" ]]; then
+            echo "Triggered by ${{ github.event_name }} — proceeding with build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LAST_BODY=$(gh release view --repo "${{ github.repository }}" --json body -q ".body" 2>/dev/null || true)
+          if [[ "$LAST_BODY" == *"$STATE"* ]]; then
+            echo "No upstream changes detected since last release ($STATE). Skipping scheduled build."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New upstream update detected! Triggering automated build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: EvilTwin (ksun-susfs + qca6750)
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 120
+
     steps:
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+
       - name: Checkout EvilTwin Kernel
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Checkout EvilTwin Patched Wi-Fi Modules
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@v4
         with:
           repository: Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules
-          ref: lineage-23.2
+          ref: "16.0"
           path: modules_src
           fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bc bison flex build-essential \
-            libssl-dev libncurses-dev libelf-dev zlib1g-dev pkg-config git curl zip cpio \
-            kmod python3 python-is-python3 ccache lld llvm dwarves zstd
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex git git-lfs gnupg gperf \
+            imagemagick lib32ncurses5-dev lib32z1-dev libelf-dev liblz4-tool \
+            libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            python3 python3-pip pahole dwarves zstd
+
+      - name: Setup Neutron Clang 23 Toolchain
+        id: clang
+        run: |
+          CLANG_DIR="$HOME/neutron-clang"
+          mkdir -p "$CLANG_DIR"
+          if [[ ! -f "$CLANG_DIR/bin/clang" ]]; then
+            curl -sL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" -o /tmp/antman
+            chmod +x /tmp/antman
+            (cd "$CLANG_DIR" && /tmp/antman -S)
+          fi
+          echo "clang_dir=$CLANG_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-ksun-susfs-${{ github.sha }}
+          key: eviltwin-ccache-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            ccache-ksun-susfs-
+            eviltwin-ccache-${{ github.ref_name }}-
+            eviltwin-ccache-
 
-      - name: Setup Neutron Clang ${{ env.NEUTRON_BUILD }}
+      - name: Configure ccache
         run: |
-          set -euo pipefail
-          rm -rf "$HOME/clang"; mkdir -p "$HOME/clang"; cd "$HOME/clang"
-          curl -fsSLO "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${NEUTRON_BUILD}/neutron-clang-${NEUTRON_BUILD}.tar.zst"
-          echo "${NEUTRON_SHA256}  neutron-clang-${NEUTRON_BUILD}.tar.zst" | sha256sum -c
-          tar -I zstd -xf "neutron-clang-${NEUTRON_BUILD}.tar.zst" && rm -f "neutron-clang-${NEUTRON_BUILD}.tar.zst"
-          curl -fsSLo antman "https://raw.githubusercontent.com/Neutron-Toolchains/antman/${ANTMAN_COMMIT}/antman"
-          echo "${ANTMAN_SHA256}  antman" | sha256sum -c
-          chmod +x antman
-          for i in 1 2 3 4; do
-            ./antman --patch=glibc && break
-            [ "$i" = 4 ] && { echo "::error::antman --patch=glibc failed 4 times"; exit 1; }
-            echo "antman attempt $i failed; retrying in $((i*20))s"; sleep $((i*20))
-          done
-          ./bin/clang --version | head -1
+          ccache -M 5G
+          ccache -z
 
       - name: Build EvilTwin Unified Kernel ZIP (ksun-susfs)
         env:
-          ZIP_PREFIX: ${{ env.ZIP_PREFIX }}
-          ZIP_VERSION: ${{ env.EVILTWIN_VERSION }}
-          KMI_STRICT: "0"
-          ALLOW_DIRTY: "1"
-          SKIP_ZIP: "0"
-          KCFLAGS: "-Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function"
+          CLANG_DIR: ${{ steps.clang.outputs.clang_dir }}
+          KSUN_TAG: ${{ needs.check-upstream.outputs.ksun_tag }}
+          ZIP_PREFIX: EvilTwin
+          ZIP_VERSION: v1.0
         run: |
-          set -euo pipefail
-          export CLANG_DIR="$HOME/clang"
           chmod +x scripts/ci/build-Hacktool.sh
-          scripts/ci/build-Hacktool.sh ksun-susfs
+          ./scripts/ci/build-Hacktool.sh ksun-susfs
 
       - name: Upload EvilTwin Flashable Kernel ZIP & Patched KO
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v4
         with:
-          name: EvilTwin-ksun-susfs-zip
+          name: EvilTwin-ksun-susfs-Flashable
           path: |
             dist/*.zip
             dist/*.ko
           if-no-files-found: error
 
       - name: Upload Build Logs & Symvers
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: EvilTwin-build-debug
           path: |
-            dist/Image-*
             dist/Module.symvers-*
             dist/config-*
             out/build.log
             out/wlan_build.log
-            out/kmi-diff.txt
-          if-no-files-found: ignore
-
-      - name: Post Kernel ZIP & Commit to Telegram (@Evil_twin_peridot)
-        continue-on-error: true
-        if: success()
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID: ${{ env.TELEGRAM_CHAT_ID }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          ZIP_FILE=$(find dist -maxdepth 1 -name "*.zip" | head -n 1)
-          if [ -z "${TELEGRAM_TOKEN}" ] || [ -z "${ZIP_FILE}" ] \vert{}\vert{} [ ! -f "${ZIP_FILE}" ]; then
-            echo "::warning::Skipping Telegram upload (missing TELEGRAM_TOKEN secret or ZIP file: ${ZIP_FILE})"
-            exit 0
-          fi
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          SAFE_COMMIT_MSG=$(echo "${COMMIT_MSG}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
-
-          CAPTION="🚀 <b>EvilTwin Kernel (${{ env.EVILTWIN_VERSION }}) — Build #${{ github.run_number }}</b>
-
-          📱 <b>Device:</b> POCO F6 / Redmi Turbo 3 (<code>peridot</code> · SM8635)
-          🌿 <b>Branch:</b> <code>${{ github.ref_name }}</code> (<a href='${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}'>${SHORT_SHA}</a>)
-          🛠 <b>Features:</b> KernelSU-Next + SuSFS + qca6750 Monitor Mode (484 CRCs)
-          ⚙️ <b>Toolchain:</b> Neutron Clang ${{ env.NEUTRON_BUILD }}
-
-          📝 <b>Latest Commit:</b>
-          <pre>${SAFE_COMMIT_MSG}</pre>"
-
-          curl -sS -F "document=@${ZIP_FILE}" \
-               -F "chat_id=${CHAT_ID}" \
-               -F "caption=${CAPTION}" \
-               -F "parse_mode=HTML" \
-               "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument"
+          if-no-files-found: warn
 
   release:
-    needs: build
+    name: Publish GitHub Release & Post to Telegram
+    needs: [check-upstream, build]
     if: success()
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Download Built Artifacts
+        uses: actions/download-artifact@v4
         with:
-          pattern: EvilTwin-ksun-susfs-zip
+          name: EvilTwin-ksun-susfs-Flashable
           path: release_files
-          merge-multiple: true
-      - run: ls -lh release_files/
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: eviltwin-${{ env.EVILTWIN_VERSION }}-${{ github.run_number }}
-          prerelease: false
-          make_latest: true
-          name: EvilTwin ${{ env.EVILTWIN_VERSION }} (Build #${{ github.run_number }})
+          tag_name: eviltwin-v1.0-${{ github.run_number }}
+          name: "EvilTwin Kernel v1.0 (KSUN + SuSFS + Monitor Mode) #${{ github.run_number }}"
           body: |
-            **EvilTwin Kernel (${{ env.EVILTWIN_VERSION }}) — KernelSU-Next + SuSFS + Monitor Mode**
-            * **Device:** POCO F6 / Redmi Turbo 3 (`peridot` · SM8635)
-            * **Kernel Branch:** `${{ github.ref_name }}` @ `${{ github.sha }}`
-            * **Toolchain:** Neutron Clang ${{ env.NEUTRON_BUILD }}
-            * **Included Files:**
-              * `EvilTwin-ksun-susfs-*.zip` — Ready-to-flash AnyKernel3 package (Kernel `Image` + `qca_cld3_qca6750.ko`)
-              * `qca_cld3_qca6750.ko` — Monitor Mode module matched to EvilTwin Kernel `Image`
-              * `qca_cld3_qca6750-stock-vibranium.ko` — Standalone Monitor Mode module matched to stock `6.1.174-Vibranium-V18+`
+            ### EvilTwin Unified Kernel + Monitor Mode Driver (`peridot` / SM8635)
+            - **Upstream State:** `${{ needs.check-upstream.outputs.upstream_state }}`
+            - **KernelSU-Next (`${{ needs.check-upstream.outputs.ksun_tag }}`) + SuSFS:** Automatically synced
+            - **Wi-Fi Driver:** Patched `qca_cld3_qca6750.ko` (`con_mode=4` Monitor Mode + Raw Frame capture)
           files: |
             release_files/*.zip
             release_files/*.ko
-            
+
+      - name: Post Release ZIP & KO to Telegram (@Evil_twin_peridot)
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          UPSTREAM_STATE: ${{ needs.check-upstream.outputs.upstream_state }}
+          KSUN_TAG: ${{ needs.check-upstream.outputs.ksun_tag }}
+        run: |
+          if [[ -z "$TELEGRAM_TOKEN" ]]; then
+            echo "::warning::TELEGRAM_TOKEN secret is not set; skipping Telegram upload."
+            exit 0
+          fi
+
+          CHAT_ID="@Evil_twin_peridot"
+          ZIP_FILE=$(find "$GITHUB_WORKSPACE/release_files" -maxdepth 1 -name "*.zip" | head -n 1)
+          KO_FILE=$(find "$GITHUB_WORKSPACE/release_files" -maxdepth 1 -name "*stock-vibranium.ko" | head -n 1)
+          COMMIT_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+          DATE_STR=$(date -u +"%d/%m/'%y")
+
+          echo "Found ZIP: $ZIP_FILE"
+          echo "Found KO:  $KO_FILE"
+
+          CAPTION="#Evil_Twin #Kernel #Peridot #AOSP #A17 #KSU #SUSFS
+          <b>Evil_Twin Kernel v1.0 | Nightly | Android 17</b>
+          <b>Device:</b> POCO F6 / Redmi Turbo 3 (<code>peridot</code> · SM8635)
+          <b>Updated:</b> ${DATE_STR} (Build #${{ github.run_number }})
+
+          ▪️ <a href=\"https://github.com/${{ github.repository }}/releases/tag/eviltwin-v1.0-${{ github.run_number }}\">Download (GitHub Release)</a>
+          ▪️ <a href=\"https://github.com/${{ github.repository }}\">Kernel Source</a> | <a href=\"https://github.com/Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules\">Module Source</a>
+          ▪️ <a href=\"https://t.me/Evil_twin_peridot\">Updates &amp; Support</a>
+
+          <b>Features &amp; Changelog:</b>
+          • <b>Base:</b> Linux 6.1.176 Vibranium (Neutron Clang + Full LTO/CFI)
+          • <b>Upstream Sync:</b> <code>${UPSTREAM_STATE}</code>
+          • <b>Root:</b> KernelSU-Next (<code>${KSUN_TAG}</code>) + SuSFS v2.3.0
+          • <b>Wireless:</b> Native <code>qca6750</code> Monitor Mode (<code>con_mode=4</code>) + Raw Frame &amp; Packet Injection
+          • <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_SHORT}</a>
+
+          <b>Notes:</b>
+          • Flash at your own risk (backup your <code>boot.img</code> first).
+          • Switch modes using <code>con_mode=4</code> (Monitor) and <code>con_mode=0</code> (Station).
+
+          <b>Credits:</b>
+          • khargosxh18 (Vibranium base), KernelSU-Next &amp; simonpunk
+          • Built by <b>Raju-yeager</b>"
+
+          # Upload Flashable Kernel ZIP
+          RESP1=$(curl -sS -F "document=@${ZIP_FILE}" \
+               --form-string "chat_id=${CHAT_ID}" \
+               --form-string "parse_mode=HTML" \
+               --form-string "caption=${CAPTION}" \
+               "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument")
+          echo "Telegram ZIP response: $RESP1"
+          echo "$RESP1" | grep -q '"ok":true' || { echo "::error::Telegram ZIP upload failed: $RESP1"; exit 1; }
+
+          # Upload Standalone Patched KO
+          if [[ -f "$KO_FILE" ]]; then
+            RESP2=$(curl -sS -F "document=@${KO_FILE}" \
+                 --form-string "chat_id=${CHAT_ID}" \
+                 --form-string "parse_mode=HTML" \
+                 --form-string "caption=📡 <b>Standalone Monitor Mode KO</b> (Matched to stock <code>6.1.174-Vibranium-V18+</code> · 484 CRCs)" \
+                 "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument")
+            echo "Telegram KO response: $RESP2"
+          fi
