@@ -72,13 +72,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
       - name: Checkout EvilTwin Patched Wi-Fi Modules
         uses: actions/checkout@v4
         with:
           repository: Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules
           path: modules_src
           fetch-depth: 1
-
 
       - name: Install Build Dependencies
         run: |
@@ -89,7 +89,6 @@ jobs:
             libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
             xsltproc zip zlib1g-dev python3 python3-pip pahole dwarves zstd
             
-
       - name: Setup Neutron Clang 23 Toolchain
         id: clang
         run: |
@@ -193,21 +192,22 @@ jobs:
           echo "Found ZIP: $ZIP_FILE"
           echo "Found KO:  $KO_FILE"
 
-          CAPTION="#Evil_Twin #Kernel #Peridot #AOSP #A17 #KSU #SUSFS
+          read -r -d '' CAPTION << EOF || true
+          #Evil_Twin #Kernel #Peridot #AOSP #A17 #KSU #SUSFS
           <b>Evil_Twin Kernel v1.0 | Nightly | Android 17</b>
           <b>Device:</b> POCO F6 / Redmi Turbo 3 (<code>peridot</code> · SM8635)
           <b>Updated:</b> ${DATE_STR} (Build #${{ github.run_number }})
 
-          ▪️ <a href=\"https://github.com/${{ github.repository }}/releases/tag/eviltwin-v1.0-${{ github.run_number }}\">Download (GitHub Release)</a>
-          ▪️ <a href=\"https://github.com/${{ github.repository }}\">Kernel Source</a> | <a href=\"https://github.com/Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules\">Module Source</a>
-          ▪️ <a href=\"https://t.me/Evil_twin_peridot\">Updates &amp; Support</a>
+          ▪️ <a href="https://github.com/${{ github.repository }}/releases/tag/eviltwin-v1.0-${{ github.run_number }}">Download (GitHub Release)</a>
+          ▪️ <a href="https://github.com/${{ github.repository }}">Kernel Source</a> | <a href="https://github.com/Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules">Module Source</a>
+          ▪️ <a href="https://t.me/Evil_twin_peridot">Updates &amp; Support</a>
 
           <b>Features &amp; Changelog:</b>
           • <b>Base:</b> Linux 6.1.176 Vibranium (Neutron Clang + Full LTO/CFI)
           • <b>Upstream Sync:</b> <code>${UPSTREAM_STATE}</code>
           • <b>Root:</b> KernelSU-Next (<code>${KSUN_TAG}</code>) + SuSFS v2.3.0
           • <b>Wireless:</b> Native <code>qca6750</code> Monitor Mode (<code>con_mode=4</code>) + Raw Frame &amp; Packet Injection
-          • <b>Commit:</b> <a href=\"https://github.com/${{ github.repository }}/commit/${{ github.sha }}\">${COMMIT_SHORT}</a>
+          • <b>Commit:</b> <a href="https://github.com/${{ github.repository }}/commit/${{ github.sha }}">${COMMIT_SHORT}</a>
 
           <b>Notes:</b>
           • Flash at your own risk (backup your <code>boot.img</code> first).
@@ -215,7 +215,8 @@ jobs:
 
           <b>Credits:</b>
           • khargosxh18 (Vibranium base), KernelSU-Next &amp; simonpunk
-          • Built by <b>Raju-yeager</b>"
+          • Built by <b>Raju-yeager</b>
+          EOF
 
           # Upload Flashable Kernel ZIP
           RESP1=$(curl -sS -F "document=@${ZIP_FILE}" \
@@ -235,3 +236,4 @@ jobs:
                  "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument")
             echo "Telegram KO response: $RESP2"
           fi
+          
