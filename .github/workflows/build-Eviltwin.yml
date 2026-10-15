@@ -6,7 +6,7 @@ on:
       release:
         description: "Publish a GitHub Release with the unified flashable zip"
         type: boolean
-        default: false
+        default: true
   push:
     branches: [ "17" ]
     paths-ignore: [ '**/*.md', 'docs/**', 'assets/**' ]
@@ -94,11 +94,13 @@ jobs:
           chmod +x scripts/ci/build-Hacktool.sh
           scripts/ci/build-Hacktool.sh ksun-susfs
 
-      - name: Upload EvilTwin Flashable Kernel ZIP
+      - name: Upload EvilTwin Flashable Kernel ZIP & Patched KO
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: EvilTwin-ksun-susfs-zip
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.ko
           if-no-files-found: error
 
       - name: Upload Build Logs & Symvers
@@ -116,13 +118,18 @@ jobs:
           if-no-files-found: ignore
 
       - name: Post Kernel ZIP & Commit to Telegram (@Evil_twin_peridot)
+        continue-on-error: true
         if: success()
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ env.TELEGRAM_CHAT_ID }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          ZIP_FILE=$(ls dist/*.zip | head -n 1)
+          ZIP_FILE=$(find dist -maxdepth 1 -name "*.zip" | head -n 1)
+          if [ -z "${TELEGRAM_TOKEN}" ] || [ -z "${ZIP_FILE}" ] \vert{}\vert{} [ ! -f "${ZIP_FILE}" ]; then
+            echo "::warning::Skipping Telegram upload (missing TELEGRAM_TOKEN secret or ZIP file: ${ZIP_FILE})"
+            exit 0
+          fi
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           SAFE_COMMIT_MSG=$(echo "${COMMIT_MSG}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
 
@@ -130,21 +137,21 @@ jobs:
 
           📱 <b>Device:</b> POCO F6 / Redmi Turbo 3 (<code>peridot</code> · SM8635)
           🌿 <b>Branch:</b> <code>${{ github.ref_name }}</code> (<a href='${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}'>${SHORT_SHA}</a>)
-          🛠 <b>Features:</b> KernelSU-Next + SuSFS + qca6750 TX Injection
+          🛠 <b>Features:</b> KernelSU-Next + SuSFS + qca6750 Monitor Mode (484 CRCs)
           ⚙️ <b>Toolchain:</b> Neutron Clang ${{ env.NEUTRON_BUILD }}
 
           📝 <b>Latest Commit:</b>
           <pre>${SAFE_COMMIT_MSG}</pre>"
 
-          curl -sS -F document=@"${ZIP_FILE}" \
-               -F chat_id="${CHAT_ID}" \
-               -F caption="${CAPTION}" \
-               -F parse_mode="HTML" \
+          curl -sS -F "document=@${ZIP_FILE}" \
+               -F "chat_id=${CHAT_ID}" \
+               -F "caption=${CAPTION}" \
+               -F "parse_mode=HTML" \
                "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument"
 
   release:
     needs: build
-    if: success() && github.event_name == 'workflow_dispatch' && inputs.release
+    if: success()
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -156,13 +163,19 @@ jobs:
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: eviltwin-${{ env.EVILTWIN_VERSION }}-${{ github.run_number }}
-          prerelease: true
+          prerelease: false
           make_latest: true
           name: EvilTwin ${{ env.EVILTWIN_VERSION }} (Build #${{ github.run_number }})
           body: |
-            **EvilTwin Kernel (${{ env.EVILTWIN_VERSION }}) — KernelSU-Next + SuSFS + Monitor TX Injection**
+            **EvilTwin Kernel (${{ env.EVILTWIN_VERSION }}) — KernelSU-Next + SuSFS + Monitor Mode**
             * **Device:** POCO F6 / Redmi Turbo 3 (`peridot` · SM8635)
             * **Kernel Branch:** `${{ github.ref_name }}` @ `${{ github.sha }}`
             * **Toolchain:** Neutron Clang ${{ env.NEUTRON_BUILD }}
-          files: release_files/*.zip
-          
+            * **Included Files:**
+              * `EvilTwin-ksun-susfs-*.zip` — Ready-to-flash AnyKernel3 package (Kernel `Image` + `qca_cld3_qca6750.ko`)
+              * `qca_cld3_qca6750.ko` — Monitor Mode module matched to EvilTwin Kernel `Image`
+              * `qca_cld3_qca6750-stock-vibranium.ko` — Standalone Monitor Mode module matched to stock `6.1.174-Vibranium-V18+`
+          files: |
+            release_files/*.zip
+            release_files/*.ko
+            
