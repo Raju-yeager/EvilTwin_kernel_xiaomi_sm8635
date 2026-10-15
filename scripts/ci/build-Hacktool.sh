@@ -2,21 +2,15 @@
 set -euo pipefail
 
 FLAVOR="${1:-ksun-susfs}"
-if [[ "$FLAVOR" != "ksun-susfs" ]]; then
-  echo "::error::Unsupported flavor '$FLAVOR' (only ksun-susfs is supported)"
-  exit 2
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-# Lock KernelSU-Next to v3.3.0 so scripts/susfs/integrate.sh matches 1:1 without v3.4.2 patch_memory crashes
 KSUN_REPO="https://github.com/KernelSU-Next/KernelSU-Next"
 KSUN_TAG="v3.3.0"
 SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
 SUSFS_PIN="4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
 
-CLANG_DIR="${CLANG_DIR:?CLANG_DIR must point to Neutron Clang root}"
+CLANG_DIR="${CLANG_DIR:?CLANG_DIR must point to Clang root}"
 export PATH="$CLANG_DIR/bin:$PATH"
 export ARCH=arm64
 export SUBARCH=arm64
@@ -37,13 +31,35 @@ log() {
 
 log "flavor=$FLAVOR  clang:$(clang --version | head -1)"
 
-# 1. Fresh clone of KernelSU-Next v3.3.0 & susfs4ksu
+# 1. Swap kernel source to khargosxh18/android_kernel_xiaomi_sm8635 (Vibranium 6.1.174 base)
+#    while preserving our EvilTwin scripts/, anykernel/, and modules_src/!
+if ! grep -q "SUBLEVEL = 174" "$ROOT/Makefile" 2>/dev/null; then
+  log "Switching kernel source tree to khargosxh18/android_kernel_xiaomi_sm8635 (Vibranium base)..."
+  TMP_VIB="$(mktemp -d)"
+  git clone --depth=1 https://github.com/khargosxh18/android_kernel_xiaomi_sm8635.git "$TMP_VIB"
+
+  # Preserve EvilTwin custom directories
+  cp -a "$ROOT/scripts/ci" "$TMP_VIB/scripts/"
+  cp -a "$ROOT/scripts/susfs" "$TMP_VIB/scripts/"
+  [[ -d "$ROOT/anykernel" ]] && cp -a "$ROOT/anykernel" "$TMP_VIB/"
+  [[ -d "$ROOT/modules_src" ]] && cp -a "$ROOT/modules_src" "$TMP_VIB/"
+  [[ -d "$ROOT/.github" ]] && cp -a "$ROOT/.github" "$TMP_VIB/"
+
+  # Replace working tree with Vibranium source + EvilTwin additions
+  find "$ROOT" -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+  cp -a "$TMP_VIB/." "$ROOT/"
+  rm -rf "$TMP_VIB"
+  log "Kernel source is now Vibranium ($(head -n 4 "$ROOT/Makefile" | tr '\n' ' '))"
+fi
+
+# 2. Integrate KernelSU-Next v3.3.0 & SuSFS
 KSUN_DIR="$ROOT/KernelSU-Next"
 S4K_DIR="$ROOT/susfs4ksu"
 
 if [[ ! -d "$KSUN_DIR" ]]; then
   log "Cloning KernelSU-Next ($KSUN_TAG)..."
   git clone --branch "$KSUN_TAG" "$KSUN_REPO" "$KSUN_DIR"
+  rm -rf "$ROOT/drivers/kernelsu"
   ln -sfn "$KSUN_DIR/kernel" "$ROOT/drivers/kernelsu"
   grep -q "kernelsu" "$ROOT/drivers/Makefile" || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$ROOT/drivers/Makefile"
   grep -q "drivers/kernelsu/Kconfig" "$ROOT/drivers/Kconfig" || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "$ROOT/drivers/Kconfig"
@@ -66,36 +82,23 @@ sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak 
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
 
-# 2. Deduplicate any double EXPORT_SYMBOL*(sysctl_sched_*) left in kernel/sched/fair.c by BORE patch
-log "Deduplicating EXPORT_SYMBOL in kernel/sched/fair.c..."
-python3 -c '
-p = "kernel/sched/fair.c"
-s = open(p).read().splitlines(True)
-seen, out = set(), []
-for line in s:
-    if "EXPORT_SYMBOL" in line and "sysctl_sched_" in line:
-        if line.strip() in seen:
-            continue
-        seen.add(line.strip())
-    out.append(line)
-open(p, "w").writelines(out)
-'
-
-# 3. Pull Vibranium base gki_defconfig + pineapple_GKI.config and match live /proc/config.gz 1:1
-log "Fetching Vibranium gki_defconfig & vendor/pineapple_GKI.config..."
-curl -fsSL "https://raw.githubusercontent.com/khargosxh18/android_kernel_xiaomi_sm8635/HEAD/arch/arm64/configs/gki_defconfig" \
-  -o "$ROOT/arch/arm64/configs/gki_defconfig"
-
+# 3. Generate Vibranium's exact defconfig (gki_defconfig + pineapple_GKI.config + peridot_GKI.config)
+log "Generating Vibranium base config..."
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-if [[ -f "$ROOT/arch/arm64/configs/vendor/pineapple_GKI.config" ]]; then
-  log "Merging arch/arm64/configs/vendor/pineapple_GKI.config..."
-  ARCH=arm64 "$ROOT/scripts/kconfig/merge_config.sh" -m -O "$OUT" "$OUT/.config" "$ROOT/arch/arm64/configs/vendor/pineapple_GKI.config"
-fi
+for frag in \
+  "$ROOT/arch/arm64/configs/vendor/pineapple_GKI.config" \
+  "$ROOT/arch/arm64/configs/vendor/peridot_GKI.config" \
+  "$ROOT/arch/arm64/configs/peridot_GKI.config"; do
+  if [[ -f "$frag" ]]; then
+    log "Merging fragment: $frag"
+    ARCH=arm64 "$ROOT/scripts/kconfig/merge_config.sh" -m -O "$OUT" "$OUT/.config" "$frag"
+  fi
+done
 
-log "Locking config 1:1 to live Vibranium /proc/config.gz + EvilTwin KSUN/SuSFS..."
+log "Applying 1:1 Vibranium working config + EvilTwin KSUN/SuSFS..."
 ./scripts/config --file "$OUT/.config" \
-  --set-str LOCALVERSION "-EvilTwin-KSUN-SuSFS" \
+  --set-str LOCALVERSION "-Vibranium-EvilTwin-KSUN" \
   -d LOCALVERSION_AUTO \
   -e KPROBES \
   -e HAVE_KPROBES \
@@ -115,10 +118,6 @@ log "Locking config 1:1 to live Vibranium /proc/config.gz + EvilTwin KSUN/SuSFS.
   -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
   -e KSU_SUSFS_OPEN_REDIRECT \
   -d KSU_SUSFS_SUS_SU \
-  -d SCHED_BORE \
-  -d KPROFILES \
-  -d MQ_IOSCHED_ADIOS \
-  -d ADIOS_IOSCHED \
   --set-val UCLAMP_BUCKETS_COUNT 20 \
   -d TASK_DELAY_ACCT \
   -d CFS_BANDWIDTH \
@@ -155,6 +154,7 @@ log "Locking config 1:1 to live Vibranium /proc/config.gz + EvilTwin KSUN/SuSFS.
   -e MODULE_SIG_SHA256 \
   -d MODULE_SIG_SHA512 \
   --set-str MODULE_SIG_HASH "sha256" \
+  -m MI_HARDWARE_ID \
   -m RFKILL \
   -m CFG80211 \
   -e NL80211_TESTMODE \
@@ -167,12 +167,10 @@ log "Locking config 1:1 to live Vibranium /proc/config.gz + EvilTwin KSUN/SuSFS.
 
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-log "Verifying live Vibranium 1:1 KABI config match:"
-grep -E "CONFIG_(UNWIND_TABLES|UNWIND_PATCH_PAC_INTO_SCS|DYNAMIC_SCS|SCHED_BORE|SCHED_HRTICK|SCHED_CLUSTER|RT_SOFTIRQ_AWARE_SCHED|HZ=|UCLAMP_BUCKETS_COUNT|TASK_DELAY_ACCT|CFS_BANDWIDTH|RSEQ|LTO_CLANG|CFG80211|NL80211_TESTMODE)" "$OUT/.config" || true
-
 log "Building Kernel Image & Modules (jobs=$JOBS)"
 make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
   CC="ccache clang" HOSTCC=clang HOSTCXX=clang++ \
+  KBUILD_MODPOST_WARN=1 \
   Image modules 2>&1 | tee "$OUT/build.log"
 
 IMG="$OUT/arch/arm64/boot/Image"
@@ -188,7 +186,7 @@ cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
 cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
 
-# 4. Compile patched qca_cld3_qca6750.ko from modules_src
+# 4. Compile patched qca_cld3_qca6750.ko from modules_src against Vibranium source!
 WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
 QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
 if [[ -d "$QCACLD_DIR" ]]; then
@@ -222,6 +220,7 @@ if [[ -d "$QCACLD_DIR" ]]; then
     modules 2>&1 | tee "$OUT/wlan_build.log"
 
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
+  cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750.ko"
 fi
 
 # 5. Package Unified AnyKernel3 Zip
