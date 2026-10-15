@@ -27,6 +27,7 @@ env:
   NEUTRON_SHA256: b473a420d693a4e3bc71b56ec4283c0e3738f87d6ac37fa202bb0be5e0a07521
   ANTMAN_COMMIT: 0b32c45e3ad83a953b4bc3fd2feb4ad3cc87c1e8
   ANTMAN_SHA256: deef2dcf11568403c712432ecb7678ef62c3244054ccfee8510ef94a8a8fb04d
+  TELEGRAM_CHAT_ID: "@Evil_twin_peridot"
 
 jobs:
   build:
@@ -86,12 +87,12 @@ jobs:
           KMI_STRICT: "0"
           ALLOW_DIRTY: "1"
           SKIP_ZIP: "0"
+          KCFLAGS: "-Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function"
         run: |
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
-                  chmod +x scripts/ci/build-Hacktool.sh
-                  scripts/ci/build-Hacktool.sh ksun-susfs
-
+          chmod +x scripts/ci/build-Hacktool.sh
+          scripts/ci/build-Hacktool.sh ksun-susfs
 
       - name: Upload EvilTwin Flashable Kernel ZIP
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -113,6 +114,33 @@ jobs:
             out/wlan_build.log
             out/kmi-diff.txt
           if-no-files-found: ignore
+
+      - name: Post Kernel ZIP & Commit to Telegram (@Evil_twin_peridot)
+        if: success()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || '8813415491:AAHqviXRL5WWQ_8nyZrLNaUCo8QSYfY629w' }}
+          CHAT_ID: ${{ env.TELEGRAM_CHAT_ID }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          ZIP_FILE=$(ls dist/*.zip | head -n 1)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          SAFE_COMMIT_MSG=$(echo "${COMMIT_MSG}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+          CAPTION="🚀 <b>EvilTwin Kernel (${{ env.EVILTWIN_VERSION }}) — Build #${{ github.run_number }}</b>
+
+          📱 <b>Device:</b> POCO F6 / Redmi Turbo 3 (<code>peridot</code> · SM8635)
+          🌿 <b>Branch:</b> <code>${{ github.ref_name }}</code> (<a href='${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}'>${SHORT_SHA}</a>)
+          🛠 <b>Features:</b> KernelSU-Next + SuSFS + qca6750 TX Injection
+          ⚙️ <b>Toolchain:</b> Neutron Clang ${{ env.NEUTRON_BUILD }}
+
+          📝 <b>Latest Commit:</b>
+          <pre>${SAFE_COMMIT_MSG}</pre>"
+
+          curl -sS -F document=@"${ZIP_FILE}" \
+               -F chat_id="${CHAT_ID}" \
+               -F caption="${CAPTION}" \
+               -F parse_mode="HTML" \
+               "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument"
 
   release:
     needs: build
