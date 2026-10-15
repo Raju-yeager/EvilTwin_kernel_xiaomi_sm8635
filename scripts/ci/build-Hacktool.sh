@@ -109,12 +109,8 @@ if grep -q "ksu_handle_post_execveat_sucompat" "$ROOT/fs/exec.c"; then
   cat << 'EOF' >> "$ROOT/fs/exec.c"
 
 /* Fallback stubs for KernelSU-Next v3.4+ missing sucompat */
-int __weak ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {
-    return 0;
-}
-int __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {
-    return 0;
-}
+void __weak ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {}
+void __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {}
 EOF
 fi
 
