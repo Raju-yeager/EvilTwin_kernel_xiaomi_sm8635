@@ -68,6 +68,9 @@ if [[ ! -d "$KSUN_DIR" ]]; then
   "$ROOT/scripts/susfs/integrate.sh" "$KSUN_DIR" "$S4K_DIR" "$ROOT"
 fi
 
+# 2a. Mark vestigial ksu_handle_* shims in selinux.c as __weak so KSUN v3.4.2+ sucompat.c doesn't collide at link time
+sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c"
+
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
 
