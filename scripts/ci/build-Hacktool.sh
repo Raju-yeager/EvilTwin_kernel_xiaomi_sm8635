@@ -203,6 +203,12 @@ if [[ -d "$QCACLD_DIR" ]]; then
   log "Building Patched Wi-Fi Module (qca_cld3_qca6750.ko)"
   ln -sfn ../qca-wifi-host-cmn "$QCACLD_DIR/cmn"
 
+  # Append the 43 vendor_dlkm (cnss/icnss) symbol CRCs (normalizing any spaces to strict TABs for modpost)
+  if [[ -f "$ROOT/scripts/ci/vendor_cnss.symvers" ]]; then
+    awk 'NF>=4 {print $1 "\t" $2 "\t" $3 "\t" $4}' "$ROOT/scripts/ci/vendor_cnss.symvers" >> "$OUT/Module.symvers"
+    log "Appended vendor cnss/icnss symbols to $OUT/Module.symvers (total entries: $(wc -l < "$OUT/Module.symvers"))"
+  fi
+
   sed -i '/CONFIG_WLAN_FEATURE_PKT_CAPTURE/d' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
   sed -i 's/CONFIG_DP_RX_DROP_RAW_FRM=y/CONFIG_DP_RX_DROP_RAW_FRM=n/g' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
 
@@ -231,6 +237,19 @@ if [[ -d "$QCACLD_DIR" ]]; then
 
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
   cp -f "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750.ko"
+
+  # Also generate a standalone module with vermagic matched to stock 6.1.174-Vibranium-V18+
+  python3 - "$QCACLD_DIR/qca_cld3_qca6750.ko" "$DIST/qca_cld3_qca6750-stock-vibranium.ko" << 'PYEOF'
+import sys, re
+data = bytearray(open(sys.argv[1], "rb").read())
+m = re.search(b"vermagic=[^\x00]+\x00", data)
+if m:
+    old = m.group(0)
+    new = b"vermagic=6.1.174-Vibranium-V18+ SMP preempt mod_unload modversions aarch64\x00"
+    if len(new) <= len(old):
+        data[m.start():m.end()] = new + b"\x00" * (len(old) - len(new))
+open(sys.argv[2], "wb").write(data)
+PYEOF
 fi
 
 # 5. Package Unified AnyKernel3 Zip
