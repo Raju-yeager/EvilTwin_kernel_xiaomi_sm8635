@@ -10,18 +10,11 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-# 1. Load pinned versions for KernelSU-Next and SuSFS
-if [[ -f "$ROOT/scripts/ci/pins.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$ROOT/scripts/ci/pins.env"
-  set +a
-fi
-
-KSUN_REPO="${KSUN_REPO:-https://github.com/KernelSU-Next/KernelSU-Next}"
-KSUN_TAG="${KSUN_TAG:-v3.3.0}"
-SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
-SUSFS_PIN="${SUSFS_PIN:-4fc9c1898ea66f51847cdbc0d1473ea4ef525a70}"
+# Lock KernelSU-Next to v3.3.0 so scripts/susfs/integrate.sh matches 1:1 without v3.4.2 patch_memory crashes
+KSUN_REPO="https://github.com/KernelSU-Next/KernelSU-Next"
+KSUN_TAG="v3.3.0"
+SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
+SUSFS_PIN="4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
 
 CLANG_DIR="${CLANG_DIR:?CLANG_DIR must point to Neutron Clang root}"
 export PATH="$CLANG_DIR/bin:$PATH"
@@ -44,7 +37,7 @@ log() {
 
 log "flavor=$FLAVOR  clang:$(clang --version | head -1)"
 
-# 2. Clone KernelSU-Next & susfs4ksu and run scripts/susfs/integrate.sh
+# 1. Fresh clone of KernelSU-Next v3.3.0 & susfs4ksu
 KSUN_DIR="$ROOT/KernelSU-Next"
 S4K_DIR="$ROOT/susfs4ksu"
 
@@ -68,18 +61,12 @@ if [[ ! -d "$KSUN_DIR" ]]; then
   "$ROOT/scripts/susfs/integrate.sh" "$KSUN_DIR" "$S4K_DIR" "$ROOT"
 fi
 
-# 2a. Mark vestigial ksu_handle_* shims in selinux.c as __weak so KSUN v3.4.2+ sucompat.c doesn't collide at link time
-sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c"
+sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c" || true
 
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
 
-# 2b. Pull clean GKI defconfig from Vibranium (khargosxh18/android_kernel_xiaomi_sm8635)
-log "Fetching clean gki_defconfig from Vibranium repo..."
-curl -fsSL "https://raw.githubusercontent.com/khargosxh18/android_kernel_xiaomi_sm8635/HEAD/arch/arm64/configs/gki_defconfig" \
-  -o "$ROOT/arch/arm64/configs/gki_defconfig"
-
-# 2c. Deduplicate any double EXPORT_SYMBOL*(sysctl_sched_*) left in kernel/sched/fair.c by BORE patch
+# 2. Deduplicate any double EXPORT_SYMBOL*(sysctl_sched_*) left in kernel/sched/fair.c by BORE patch
 log "Deduplicating EXPORT_SYMBOL in kernel/sched/fair.c..."
 python3 -c '
 p = "kernel/sched/fair.c"
@@ -94,10 +81,19 @@ for line in s:
 open(p, "w").writelines(out)
 '
 
-log "Applying gki_defconfig"
+# 3. Pull Vibranium base gki_defconfig + pineapple_GKI.config and match live /proc/config.gz 1:1
+log "Fetching Vibranium gki_defconfig & vendor/pineapple_GKI.config..."
+curl -fsSL "https://raw.githubusercontent.com/khargosxh18/android_kernel_xiaomi_sm8635/HEAD/arch/arm64/configs/gki_defconfig" \
+  -o "$ROOT/arch/arm64/configs/gki_defconfig"
+
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-log "Configuring EvilTwin (KernelSU-Next + SuSFS + Strict GKI KABI Lock + CFG80211)"
+if [[ -f "$ROOT/arch/arm64/configs/vendor/pineapple_GKI.config" ]]; then
+  log "Merging arch/arm64/configs/vendor/pineapple_GKI.config..."
+  ARCH=arm64 "$ROOT/scripts/kconfig/merge_config.sh" -m -O "$OUT" "$OUT/.config" "$ROOT/arch/arm64/configs/vendor/pineapple_GKI.config"
+fi
+
+log "Locking config 1:1 to live Vibranium /proc/config.gz + EvilTwin KSUN/SuSFS..."
 ./scripts/config --file "$OUT/.config" \
   --set-str LOCALVERSION "-EvilTwin-KSUN-SuSFS" \
   -d LOCALVERSION_AUTO \
@@ -119,56 +115,60 @@ log "Configuring EvilTwin (KernelSU-Next + SuSFS + Strict GKI KABI Lock + CFG802
   -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
   -e KSU_SUSFS_OPEN_REDIRECT \
   -d KSU_SUSFS_SUS_SU \
-  -d UNWIND_PATCH_PAC_INTO_SCS \
-  -d DYNAMIC_SCS \
-  -d UNWIND_TABLES \
   -d SCHED_BORE \
-  -d RT_SOFTIRQ_AWARE_SCHED \
-  -d SCHED_HRTICK \
-  -d RCU_BOOST \
-  -d RCU_LAZY \
-  -d BOEFFLA_WL_BLOCKER \
   -d KPROFILES \
   -d MQ_IOSCHED_ADIOS \
   -d ADIOS_IOSCHED \
+  --set-val UCLAMP_BUCKETS_COUNT 20 \
+  -d TASK_DELAY_ACCT \
+  -d CFS_BANDWIDTH \
+  -d RT_GROUP_SCHED \
+  -d CGROUP_PIDS \
+  -d CGROUP_DEVICE \
+  -d CGROUP_PERF \
+  -d CGROUP_MISC \
+  -d USER_NS \
+  -d RSEQ \
+  -d SCHED_CLUSTER \
+  -e SCHED_MC \
+  -e SCHED_HRTICK \
+  -e RT_SOFTIRQ_AWARE_SCHED \
+  -e RCU_BOOST \
+  -e RCU_LAZY \
+  -e RCU_LAZY_DEFAULT_OFF \
+  -e BOEFFLA_WL_BLOCKER \
+  -e UNWIND_TABLES \
+  -e UNWIND_PATCH_PAC_INTO_SCS \
+  -e DYNAMIC_SCS \
   -d HZ_100 \
   -e HZ_250 \
   -d HZ_300 \
   -d HZ_1000 \
   --set-val HZ 250 \
-  --set-val UCLAMP_BUCKETS_COUNT 5 \
-  -e CFS_BANDWIDTH \
-  -e RT_GROUP_SCHED \
-  -e TASK_DELAY_ACCT \
-  -e RSEQ \
-  -e SCHED_CLUSTER \
-  -e PID_NS \
-  -e USER_NS \
-  -e CGROUP_PIDS \
-  -e CGROUP_DEVICE \
-  -e CGROUP_PERF \
-  -e CGROUP_MISC \
-  -e RFKILL \
-  -e CFG80211 \
+  -d LTO_NONE \
+  -d LTO_CLANG_THIN \
+  -e LTO \
+  -e LTO_CLANG \
+  -e LTO_CLANG_FULL \
+  -e CFI_CLANG \
+  -d MODULE_SIG_ALL \
+  -e MODULE_SIG_SHA256 \
+  -d MODULE_SIG_SHA512 \
+  --set-str MODULE_SIG_HASH "sha256" \
+  -m RFKILL \
+  -m CFG80211 \
   -e NL80211_TESTMODE \
   -e CFG80211_REQUIRE_SIGNED_REGDB \
   -e CFG80211_USE_KERNEL_REGDB_KEYS \
   -e CFG80211_DEFAULT_PS \
-  -e CFG80211_CRDA_SUPPORT \
-  -e CFG80211_WEXT \
-  -e MAC80211
+  -d CFG80211_CRDA_SUPPORT \
+  -d CFG80211_WEXT \
+  -m MAC80211
 
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-# Force-disable UNWIND_TABLES, SCHED_BORE, and SCHED_HRTICK if Kconfig 'select' re-enabled them
-sed -i 's/^CONFIG_UNWIND_PATCH_PAC_INTO_SCS=y/# CONFIG_UNWIND_PATCH_PAC_INTO_SCS is not set/' "$OUT/.config"
-sed -i 's/^CONFIG_DYNAMIC_SCS=y/# CONFIG_DYNAMIC_SCS is not set/' "$OUT/.config"
-sed -i 's/^CONFIG_UNWIND_TABLES=y/# CONFIG_UNWIND_TABLES is not set/' "$OUT/.config"
-sed -i 's/^CONFIG_SCHED_BORE=y/# CONFIG_SCHED_BORE is not set/' "$OUT/.config"
-sed -i 's/^CONFIG_SCHED_HRTICK=y/# CONFIG_SCHED_HRTICK is not set/' "$OUT/.config"
-
-log "Verifying KABI-critical & Wi-Fi config state:"
-grep -E "CONFIG_(UNWIND_TABLES|SCHED_BORE|SCHED_HRTICK|HZ=|UCLAMP_BUCKETS_COUNT|CFG80211|NL80211_TESTMODE|MAC80211)" "$OUT/.config" || true
+log "Verifying live Vibranium 1:1 KABI config match:"
+grep -E "CONFIG_(UNWIND_TABLES|UNWIND_PATCH_PAC_INTO_SCS|DYNAMIC_SCS|SCHED_BORE|SCHED_HRTICK|SCHED_CLUSTER|RT_SOFTIRQ_AWARE_SCHED|HZ=|UCLAMP_BUCKETS_COUNT|TASK_DELAY_ACCT|CFS_BANDWIDTH|RSEQ|LTO_CLANG|CFG80211|NL80211_TESTMODE)" "$OUT/.config" || true
 
 log "Building Kernel Image & Modules (jobs=$JOBS)"
 make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -181,14 +181,14 @@ if [[ ! -f "$IMG" ]]; then
   exit 1
 fi
 
-log "Checking exported KABI CRCs for module_layout and runqueues:"
-grep -E "\b(module_layout|runqueues)\b" "$OUT/Module.symvers" || true
+log "Checking exported KABI CRCs for module_layout, runqueues, and cpu_number:"
+grep -E "\b(module_layout|runqueues|cpu_number)\b" "$OUT/Module.symvers" || true
 
 cp -f "$IMG" "$DIST/Image-$FLAVOR"
 cp -f "$OUT/Module.symvers" "$DIST/Module.symvers-$FLAVOR"
 cp -f "$OUT/.config" "$DIST/config-$FLAVOR"
 
-# 3. Compile patched qca_cld3_qca6750.ko from modules_src
+# 4. Compile patched qca_cld3_qca6750.ko from modules_src
 WLAN_DIR="$ROOT/modules_src/qcom/opensource/wlan"
 QCACLD_DIR="$WLAN_DIR/qcacld-3.0"
 if [[ -d "$QCACLD_DIR" ]]; then
@@ -224,7 +224,7 @@ if [[ -d "$QCACLD_DIR" ]]; then
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
 fi
 
-# 4. Package Unified AnyKernel3 Zip ONLY (no loose .ko in dist/)
+# 5. Package Unified AnyKernel3 Zip
 if [[ "${SKIP_ZIP:-0}" != "1" && -d "$ROOT/anykernel" ]]; then
   STAGE="$(mktemp -d)"
   cp -r "$ROOT/anykernel/." "$STAGE/"
