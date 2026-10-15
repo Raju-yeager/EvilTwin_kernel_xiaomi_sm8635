@@ -52,6 +52,12 @@ if ! grep -q "SUBLEVEL = 174" "$ROOT/Makefile" 2>/dev/null; then
   log "Kernel source is now Vibranium ($(head -n 4 "$ROOT/Makefile" | tr '\n' ' '))"
 fi
 
+# Fix OpenSSL 3.0 undeclared 'key_pass' in certs/extract-cert.c on Ubuntu 24.04
+if [[ -f "$ROOT/certs/extract-cert.c" ]]; then
+  sed -i '/static.*key_pass/d' "$ROOT/certs/extract-cert.c"
+  sed -i '1i static const char *key_pass;' "$ROOT/certs/extract-cert.c"
+fi
+
 # 2. Integrate KernelSU-Next v3.3.0 & SuSFS
 KSUN_DIR="$ROOT/KernelSU-Next"
 S4K_DIR="$ROOT/susfs4ksu"
