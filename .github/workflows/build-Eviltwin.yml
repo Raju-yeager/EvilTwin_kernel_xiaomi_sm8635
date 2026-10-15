@@ -72,14 +72,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
       - name: Checkout EvilTwin Patched Wi-Fi Modules
         uses: actions/checkout@v4
         with:
           repository: Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules
-          ref: "16.0"
           path: modules_src
           fetch-depth: 1
+
 
       - name: Install Build Dependencies
         run: |
