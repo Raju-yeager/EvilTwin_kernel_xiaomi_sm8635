@@ -118,7 +118,7 @@ jobs:
       - name: Post Kernel ZIP & Commit to Telegram (@Evil_twin_peridot)
         if: success()
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || '8813415491:AAHqviXRL5WWQ_8nyZrLNaUCo8QSYfY629w' }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ env.TELEGRAM_CHAT_ID }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
