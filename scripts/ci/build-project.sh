@@ -31,7 +31,7 @@ ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
 ZIP_VERSION="${ZIP_VERSION:-v1.0}"
 
 # Suppress Clang macro & unused warning spam across both kernel and qca6750 builds
-WARN_FLAGS="-Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-misleading-indentation ${KCFLAGS:-}"
+WARN_FLAGS="-Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-misleading-indentation -Wno-error=unused-but-set-global ${KCFLAGS:-}"
 
 log() {
   printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
@@ -55,10 +55,10 @@ cp -a "$TMP_VIB/." "$ROOT/"
 rm -rf "$TMP_VIB"
 log "Kernel source synced: $(head -n 4 "$ROOT/Makefile" | tr '\n' ' ')"
 
-# Fix OpenSSL 3.0 undeclared 'key_pass' in certs/extract-cert.c on Ubuntu 24.04
+# Fix OpenSSL 3.0 undeclared 'key_pass' and unused global warning on Ubuntu 24.04
 if [[ -f "$ROOT/certs/extract-cert.c" ]]; then
   sed -i '/static.*key_pass/d' "$ROOT/certs/extract-cert.c"
-  sed -i '1i static const char *key_pass;' "$ROOT/certs/extract-cert.c"
+  sed -i '1i __attribute__((unused)) static const char *key_pass;' "$ROOT/certs/extract-cert.c"
 fi
 
 # 2. Integrate Latest KernelSU-Next & SuSFS (with automatic fallback to tested pin on conflict)
