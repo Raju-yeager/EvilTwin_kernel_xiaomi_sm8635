@@ -10,6 +10,7 @@
   [![SUSFS](https://img.shields.io/badge/SUSFS-v2.3.0-purple?style=for-the-badge&logo=shield)](https://gitlab.com/simonpunk/susfs4ksu)
   [![Toolchain](https://img.shields.io/badge/Neutron_Clang-23.0.0git-orange?style=for-the-badge&logo=llvm)](https://github.com/Neutron-Toolchains/clang-build-catalogue)
   [![Downloads](https://img.shields.io/github/downloads/Raju-yeager/EvilTwin_kernel_xiaomi_sm8635/total?color=00e5ff&label=DOWNLOADS&style=for-the-badge&logo=cloud-download)](https://github.com/Raju-yeager/EvilTwin_kernel_xiaomi_sm8635/releases)
+  [![Support](https://img.shields.io/badge/Support-Buy_Me_A_Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/raju_yeager)
   [![License](https://img.shields.io/badge/LICENSE-GPL--2.0-red?style=for-the-badge)](LICENSE)
 </div>
 
@@ -67,29 +68,19 @@
 ### Method 2: Fastboot (Kernel Image Only)
 If flashing a raw `boot.img` via Fastboot, you must manually place `qca_cld3_qca6750.ko` in `/data/adb/eviltwin/` for the patched Wi-Fi driver to take effect:
 
-```bash
 fastboot flash boot boot.img
 fastboot reboot
-```
 
----
-
-## 🔧 Usage & Monitor Mode Commands
-
-### 1. Toggle Monitor Mode (`wlan0`)
-Run the following in Termux, Kali NetHunter, or ADB root shell (`su`):
-
-```bash
+🔧 Usage & Monitor Mode Commands
+1. Toggle Monitor Mode (wlan0)
+Run the following in Termux, Kali NetHunter, or ADB root shell (su):
 # Enable Monitor Mode (con_mode = 4)
 su -c "ip link set wlan0 down && echo 4 > /sys/module/qca_cld3_qca6750/parameters/con_mode && ip link set wlan0 up"
 
 # Return to Normal Managed / Station Mode (con_mode = 0)
 su -c "ip link set wlan0 down && echo 0 > /sys/module/qca_cld3_qca6750/parameters/con_mode && ip link set wlan0 up"
-```
 
-### 2. Verify Installation & Driver Load State
-
-```bash
+2. Verify Installation & Driver Load State
 # Check EvilTwin kernel version
 uname -r
 
@@ -99,44 +90,35 @@ mount | grep qca_cld3_qca6750
 
 # Check SuSFS initialization in kernel ring buffer
 su -c "dmesg | grep -i susfs"
-```
 
----
-
-## 🎯 Offensive Security & Auditing Ecosystem
-
+🎯 Offensive Security & Auditing Ecosystem
 | Auditing Suite / Vector | Supported Operations | Interface / Requirement |
-| :--- | :--- | :--- |
-| **Kali NetHunter / Termux Chroot** | Full 802.11 wireless auditing, frame capture & custom packet crafting | `wlan0` (`con_mode=4`) |
-| **Aircrack-ng Suite** | `airodump-ng` passive beacon/handshake capture & `aireplay-ng` testing | Radiotap RX / TX hooks |
-| **HCXTools (`hcxdumptool`)** | PMKID & EAPOL 4-way handshake harvesting | Raw 802.11 frame RX |
-| **Bettercap & Wifite2** | Automated wireless reconnaissance & rogue AP / Evil Twin simulations | `CFG80211` / `MAC80211` stack |
-| **Wireshark / `tcpdump`** | Live 802.11 management, control & data frame dissection | `wlan0` Promiscuous / Monitor |
-
----
-
+|---|---|---|
+| Kali NetHunter / Termux Chroot | Full 802.11 wireless auditing, frame capture & custom packet crafting | wlan0 (con_mode=4) |
+| Aircrack-ng Suite | airodump-ng passive beacon/handshake capture & aireplay-ng testing | Radiotap RX / TX hooks |
+| HCXTools (hcxdumptool) | PMKID & EAPOL 4-way handshake harvesting | Raw 802.11 frame RX |
+| Bettercap & Wifite2 | Automated wireless reconnaissance & rogue AP / Evil Twin simulations | CFG80211 / MAC80211 stack |
+| Wireshark / tcpdump | Live 802.11 management, control & data frame dissection | wlan0 Promiscuous / Monitor |
+☕ Support My Work
+If you find my projects or builds helpful, consider buying me a coffee to support future updates and development!
+<p align="left">
+<a href="https://buymeacoffee.com/raju_yeager" target="_blank">
+<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50" width="180">
+</a>
+</p>
 <div align="center">
-
-  ### 🛡️ **EVILTWIN SECURITY RESEARCH // END OF FILE** 🛡️
-
-  ![Kali NetHunter](https://img.shields.io/badge/Kali_NetHunter-Ready-557C94?style=for-the-badge&logo=kalilinux&logoColor=white)
-  ![802.11 Monitor](https://img.shields.io/badge/802.11-Monitor_%26_Injection-00ff66?style=for-the-badge&logo=wireshark&logoColor=black)
-  ![Qualcomm QCA6750](https://img.shields.io/badge/QCA6750-qcacld--3.0_Patched-E2231A?style=for-the-badge&logo=qualcomm&logoColor=white)
-  ![Target Device](https://img.shields.io/badge/Target-POCO_F6_(peridot)-FF6900?style=for-the-badge&logo=xiaomi&logoColor=white)
-
-  <br />
-
-  <table>
-    <tr>
-      <td align="center"><b>🔐 Root & Stealth</b><br /><sub>KernelSU-Next v3.3.0 + SuSFS v2.3.0</sub></td>
-      <td align="center"><b>📡 Wireless Stack</b><br /><sub>QCA6750 Monitor Mode + Raw TX</sub></td>
-      <td align="center"><b>⚙️ Build Pipeline</b><br /><sub>Automated CI · Neutron Clang 23</sub></td>
-    </tr>
-  </table>
-
-  <p>
-    <b>Built for the Offensive Security & Hardware Research Community.</b><br />
-    <sub><i>Authorized penetration testing and educational research only. Contributions, bug reports, and pull requests are welcome.</i></sub>
-  </p>
-
+🛡️ EVILTWIN SECURITY RESEARCH // END OF FILE 🛡️
+<br />
+<table>
+<tr>
+<td align="center"><b>🔐 Root & Stealth</b><br /><sub>KernelSU-Next v3.3.0 + SuSFS v2.3.0</sub></td>
+<td align="center"><b>📡 Wireless Stack</b><br /><sub>QCA6750 Monitor Mode + Raw TX</sub></td>
+<td align="center"><b>⚙️ Build Pipeline</b><br /><sub>Automated CI · Neutron Clang 23</sub></td>
+</tr>
+</table>
+<p>
+<b>Built for the Offensive Security & Hardware Research Community.</b><br />
+<sub><i>Authorized penetration testing and educational research only. Contributions, bug reports, and pull requests are welcome.</i></sub>
+</p>
 </div>
+
