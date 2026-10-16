@@ -30,8 +30,8 @@ JOBS="${JOBS:-$(nproc --all)}"
 ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
 ZIP_VERSION="${ZIP_VERSION:-v1.0}"
 
-# Suppress Clang macro & unused warning spam across both kernel and qca6750 builds
-WARN_FLAGS="-Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-misleading-indentation -Wno-error=unused-but-set-global ${KCFLAGS:-}"
+# Suppress warnings & prevent warnings from breaking build with -Wno-error
+WARN_FLAGS="-Wno-error -Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-misleading-indentation -Wno-format ${KCFLAGS:-}"
 
 log() {
   printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
@@ -313,7 +313,7 @@ PYEOF
     CONFIG_QCA_CLD_WLAN=m \
     WLAN_CFG_OVERRIDE="CONFIG_QCA_CLD_WLAN=m CONFIG_DP_RX_DROP_RAW_FRM=n CONFIG_FEATURE_MONITOR_MODE_SUPPORT=y CONFIG_WIFI_MONITOR_SUPPORT=y" \
     KBUILD_MODPOST_WARN=1 \
-    KCFLAGS="-Wno-error $WARN_FLAGS" \
+    KCFLAGS="$WARN_FLAGS" \
     modules 2>&1 | tee "$OUT/wlan_build.log"
 
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
