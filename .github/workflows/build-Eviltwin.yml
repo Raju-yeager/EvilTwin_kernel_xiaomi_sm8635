@@ -122,8 +122,8 @@ jobs:
           ZIP_PREFIX: EvilTwin
           ZIP_VERSION: v1.0
         run: |
-          chmod +x scripts/ci/build-Hacktool.sh
-          ./scripts/ci/build-Hacktool.sh ksun-susfs
+          chmod +x scripts/ci/build-project.sh
+          ./scripts/ci/build-project.sh ksun-susfs
 
       - name: Upload EvilTwin Flashable ZIPs
         uses: actions/upload-artifact@v4
@@ -227,3 +227,4 @@ jobs:
           (Flash this if you only want the Wi-Fi Monitor Mode features on ANY custom kernel without changing your boot.img. Auto-adapts to your kernel version!)" \
                  "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument"
           fi
+          
