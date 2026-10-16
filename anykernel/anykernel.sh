@@ -51,11 +51,11 @@ ui_print "=================================================="
 ui_print " "
 ui_print "[*] Unpacking boot partition..."
 
-dump_boot;
+split_boot;
 
 ui_print "[*] Injecting EvilTwin Kernel Image onto boot..."
 
-write_boot;
+flash_boot;
 
 # Stage EvilTwin Wi-Fi module & on-demand loader (No boot-blocking post-fs-data hook)
 if [ -f "$home/qca_cld3_qca6750.ko" ]; then
