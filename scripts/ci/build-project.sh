@@ -103,14 +103,16 @@ fi
 
 sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c" || true
 
-# Fix KernelSU-Next v3.4+ missing sucompat symbols in fs/exec.c
+# Fix KernelSU-Next v3.4+ missing sucompat symbols in fs/exec.c (must return int to match extern int declarations)
 if grep -q "ksu_handle_post_execveat_sucompat" "$ROOT/fs/exec.c"; then
-  log "Injecting correct weak sucompat stubs into fs/exec.c..."
+  log "Injecting matching int __weak sucompat stubs into fs/exec.c..."
+  sed -i 's/extern void ksu_handle_\(post_\)\?execveat_sucompat/extern int ksu_handle_\1execveat_sucompat/g' "$ROOT/fs/exec.c"
+  sed -i '/__weak ksu_handle_.*execveat_sucompat/d' "$ROOT/fs/exec.c"
   cat << 'EOF' >> "$ROOT/fs/exec.c"
 
 /* Fallback stubs for KernelSU-Next v3.4+ missing sucompat */
-void __weak ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {}
-void __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) {}
+int __weak ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) { return 0; }
+int __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) { return 0; }
 EOF
 fi
 
@@ -135,6 +137,7 @@ log "Applying 1:1 Vibranium working config + EvilTwin KSUN/SuSFS..."
 ./scripts/config --file "$OUT/.config" \
   --set-str LOCALVERSION "-Vibranium-EvilTwin-KSUN" \
   -d LOCALVERSION_AUTO \
+  -d WERROR \
   -e KPROBES \
   -e HAVE_KPROBES \
   -e KPROBE_EVENTS \
