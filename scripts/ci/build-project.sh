@@ -30,11 +30,11 @@ JOBS="${JOBS:-$(nproc --all)}"
 ZIP_PREFIX="${ZIP_PREFIX:-EvilTwin}"
 ZIP_VERSION="${ZIP_VERSION:-v1.0}"
 
-# Suppress warnings & prevent warnings from breaking build with -Wno-error
+# Suppress warnings & prevent Clang 23 warnings from breaking build
 WARN_FLAGS="-Wno-error -Wno-gnu-zero-variadic-macro-arguments -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-misleading-indentation -Wno-format ${KCFLAGS:-}"
 
 log() {
-  printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +%H:%M:%S)" "$*"
+  printf '\033[1;34m[%s]\033[0m %s\n' "$(date -u +\%H:\%M:\%S)" "$*"
 }
 
 log "flavor=$FLAVOR  ksun=$KSUN_TAG  clang:$(clang --version | head -1)"
@@ -101,20 +101,79 @@ if [[ ! -d "$KSUN_DIR" ]]; then
   fi
 fi
 
-sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c" || true
-
-# Fix KernelSU-Next v3.4+ missing sucompat symbols in fs/exec.c (must return int to match extern int declarations)
-if grep -q "ksu_handle_post_execveat_sucompat" "$ROOT/fs/exec.c"; then
-  log "Injecting matching int __weak sucompat stubs into fs/exec.c..."
-  sed -i 's/extern void ksu_handle_\(post_\)\?execveat_sucompat/extern int ksu_handle_\1execveat_sucompat/g' "$ROOT/fs/exec.c"
-  sed -i '/__weak ksu_handle_.*execveat_sucompat/d' "$ROOT/fs/exec.c"
-  cat << 'EOF' >> "$ROOT/fs/exec.c"
-
-/* Fallback stubs for KernelSU-Next v3.4+ missing sucompat */
-int __weak ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) { return 0; }
-int __weak ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) { return 0; }
-EOF
+# Make KernelSU-Next ksu_handle_* symbols weak where needed to avoid duplicate symbol clashes
+if [[ -f "$KSUN_DIR/kernel/selinux/selinux.c" ]]; then
+  sed -i 's/^int ksu_handle_/__weak int ksu_handle_/g; s/^void ksu_handle_/__weak void ksu_handle_/g; s/^bool ksu_handle_/__weak bool ksu_handle_/g' "$KSUN_DIR/kernel/selinux/selinux.c" || true
 fi
+
+# Dynamically inspect fs/exec.c (and other hooked files) and generate 100% signature-matching __weak stubs
+log "Inspecting fs/exec.c for missing KernelSU-Next v3.4+ sucompat symbols..."
+python3 - "$ROOT" "$KSUN_DIR" << 'PYEOF'
+import os
+import re
+import sys
+
+root_dir = sys.argv[1]
+ksun_dir = sys.argv[2]
+
+# Collect all function names actually defined inside KernelSU-Next/kernel
+ksun_defined = set()
+for dirpath, _, filenames in os.walk(os.path.join(ksun_dir, "kernel")):
+    for fn in filenames:
+        if fn.endswith((".c", ".h")):
+            p = os.path.join(dirpath, fn)
+            try:
+                txt = open(p, "r", encoding="utf-8", errors="ignore").read()
+                for m in re.finditer(r'\b(ksu_handle_[a-zA-Z0-9_]+)\s*\(', txt):
+                    ksun_defined.add(m.group(1))
+            except Exception:
+                pass
+
+exec_c = os.path.join(root_dir, "fs", "exec.c")
+if os.path.isfile(exec_c):
+    content = open(exec_c, "r", encoding="utf-8", errors="ignore").read()
+
+    # Remove any previously injected fallback block or __weak lines
+    content = re.sub(
+        r'/\* Fallback stubs for KernelSU-Next.*?\*/.*',
+        '',
+        content,
+        flags=re.DOTALL
+    )
+    content = re.sub(
+        r'^.*__weak\s+ksu_handle_.*execveat_sucompat.*$\n?',
+        '',
+        content,
+        flags=re.MULTILINE
+    )
+
+    # Find every `extern <ret_type> ksu_handle_*execveat*(...);` in fs/exec.c
+    extern_pattern = re.compile(
+        r'extern\s+(int|void|bool|long)\s+(ksu_handle_[a-zA-Z0-9_]*execve[a-zA-Z0-9_]*)\s*\(([^;]*?)\)\s*;',
+        re.DOTALL
+    )
+
+    stubs = []
+    seen = set()
+    for match in extern_pattern.finditer(content):
+        ret_type = match.group(1).strip()
+        fn_name = match.group(2).strip()
+        raw_args = " ".join(match.group(3).split())
+
+        if fn_name in seen:
+            continue
+        seen.add(fn_name)
+
+        # Ensure parameter names exist if an extern prototype omitted them
+        ret_stmt = "return 0;" if ret_type != "void" else "return;"
+        stubs.append(f"{ret_type} __weak {fn_name}({raw_args}) {{ {ret_stmt} }}\n")
+        print(f"[+] Generated exact matching __weak stub for {fn_name}: {ret_type} ({raw_args})")
+
+    if stubs:
+        content = content.rstrip() + "\n\n/* Fallback stubs for KernelSU-Next v3.4+ missing sucompat */\n" + "".join(stubs)
+
+    open(exec_c, "w", encoding="utf-8").write(content)
+PYEOF
 
 rm -rf "$OUT"
 mkdir -p "$OUT" "$DIST"
@@ -206,11 +265,15 @@ log "Applying 1:1 Vibranium working config + EvilTwin KSUN/SuSFS..."
 make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
 log "Building Kernel Image & Modules (jobs=$JOBS)"
-make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+if ! make -j"$JOBS" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
   CC="ccache clang" HOSTCC="ccache clang" HOSTCXX="ccache clang++" \
   KBUILD_MODPOST_WARN=1 \
   KCFLAGS="$WARN_FLAGS" \
-  Image modules 2>&1 | tee "$OUT/build.log"
+  Image modules 2>&1 | tee "$OUT/build.log"; then
+  echo "::error::Kernel build failed! Printing compiler/linker errors from build.log:"
+  grep -n -C 5 -E "(error:|fatal error:|undefined symbol|ld\.lld: error:)" "$OUT/build.log" || true
+  exit 1
+fi
 
 IMG="$OUT/arch/arm64/boot/Image"
 if [[ ! -f "$IMG" ]]; then
@@ -296,7 +359,7 @@ PYEOF
   sed -i '/CONFIG_WLAN_FEATURE_PKT_CAPTURE/d' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
   sed -i 's/CONFIG_DP_RX_DROP_RAW_FRM=y/CONFIG_DP_RX_DROP_RAW_FRM=n/g' "$QCACLD_DIR/configs/pineapple_gki_qca6750_defconfig" || true
 
-  make -j"$JOBS" -C "$ROOT" O="$OUT" \
+  if ! make -j"$JOBS" -C "$ROOT" O="$OUT" \
     M="$QCACLD_DIR" \
     CC="ccache clang" HOSTCC="ccache clang" HOSTCXX="ccache clang++" \
     WLAN_ROOT="$QCACLD_DIR" \
@@ -317,7 +380,11 @@ PYEOF
     WLAN_CFG_OVERRIDE="CONFIG_QCA_CLD_WLAN=m CONFIG_DP_RX_DROP_RAW_FRM=n CONFIG_FEATURE_MONITOR_MODE_SUPPORT=y CONFIG_WIFI_MONITOR_SUPPORT=y" \
     KBUILD_MODPOST_WARN=1 \
     KCFLAGS="$WARN_FLAGS" \
-    modules 2>&1 | tee "$OUT/wlan_build.log"
+    modules 2>&1 | tee "$OUT/wlan_build.log"; then
+    echo "::error::WLAN module build failed! Printing errors from wlan_build.log:"
+    grep -n -C 5 -E "(error:|fatal error:|undefined symbol|ld\.lld: error:)" "$OUT/wlan_build.log" || true
+    exit 1
+  fi
 
   llvm-strip --strip-debug "$QCACLD_DIR/qca_cld3_qca6750.ko"
 fi
