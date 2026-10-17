@@ -45,7 +45,7 @@
 | :--- | :--- | :--- |
 | **Base Kernel** | GKI `android14-6.1` (`peridot` / SM8635) | Core kernel with `CFG80211` & `MAC80211` enabled |
 | **WLAN Driver** | [`Eviltwin-drivers_kernel_xiaomi_sm8635-modules`](https://github.com/Raju-yeager/Eviltwin-drivers_kernel_xiaomi_sm8635-modules) | Patched `qca_cld3_qca6750.ko` (`lineage-23.2`) |
-| **Root Manager** | [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) `v3.3.0` | Kernel-based root with kprobe hooks |
+| **Root Manager** | [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) `v3.4.2` | Kernel-based root with kprobe hooks |
 | **Stealth Engine** | [SuSFS](https://gitlab.com/simonpunk/susfs4ksu) `v2.3.0` (`gki-android14-6.1`) | VFS path/mount hiding, kstat & cmdline spoofing |
 | **Toolchain** | Neutron Clang `23.0.0git` (`30062026`) | Full LLVM/LLD + LTO compilation |
 
